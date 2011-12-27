@@ -453,12 +453,13 @@
                            (map vector
                                 reassign-ids
                                 ;; for some reason it goes into infinite loop without limiting the repeat-seq
-                                (repeat-seq (count reassign-ids) reassign-slots)))
+                                (repeat-seq (count reassign-ids) available-slots)))
         stay-assignment (into {} (mapcat (fn [[node+port task-ids]] (for [id task-ids] [id node+port])) keep-assigned))]
     (when-not (empty? reassignment)
       (log-message "Reassigning " storm-id " to " total-slots-to-use " slots")
       (log-message "Reassign ids: " (vec reassign-ids))
       (log-message "Available slots: " (pr-str available-slots))
+      (log-message "Reassign slots: " (pr-str reassign-slots))
       )
     (merge stay-assignment reassignment)
     ))
