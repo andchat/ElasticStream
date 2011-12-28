@@ -9,12 +9,28 @@
     (TaskInfo. (.nextInt random 4))
     ))
 
-(defn test []
+(defn test1 []
   (for [task-id task-ids]
     [task-id (-> (task-info task-id) :component-id)]
     ))
 
+(defn test2 []
+  (into {}
+    (for [task-id task-ids]
+      [task-id (-> (task-info task-id) :component-id)]
+      )))
 
+(defn test3 []
+  (into vector
+    (for [task-id task-ids]
+      [task-id (-> (task-info task-id) :component-id)]
+      )))
+
+(defn test4 []
+  (apply merge-with concat
+    (for [task-id task-ids]
+      {(-> (task-info task-id) :component-id) #{task-id}}
+      )))
 
 
 
