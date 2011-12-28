@@ -412,6 +412,22 @@
     (apply interleave-all split-up)
     ))
 
+;; andchat 27/12/2011
+; task-info (storm-task-info storm-cluster-state storm-id)
+
+(defn sort-task-ids [storm-cluster-state storm-id task-ids]
+  (let [;task-info (storm-task-info storm-cluster-state storm-id)
+        ;task-id+comp-id (for [task-id task-ids]
+         ;                 [task-id (-> (.task-info storm-cluster-state storm-id task-id) :component-id)]
+          ;                )
+        task-id+comp-id (apply merge-with concat
+                          (for [task-id task-ids]
+                            {(-> (.task-info storm-cluster-state storm-id task-id) :component-id) #{task-id}}
+                            ))]
+    (log-message "Sort Tasks: " task-id+comp-id)
+    (apply interleave-all (vals task-id+comp-id))))
+
+
 ;; NEW NOTES
 ;; only assign to supervisors who are there and haven't timed out
 ;; need to reassign workers with tasks that have timed out (will this make it brittle?)
@@ -429,6 +445,7 @@
   (let [available-slots (available-slots conf storm-cluster-state callback)        
         storm-conf (read-storm-conf conf storm-id)
         all-task-ids (set (.task-ids storm-cluster-state storm-id))
+        sorted-all-task-ids (sort-task-ids storm-cluster-state storm-id all-task-ids)
 
         existing-assigned (reverse-map (:task->node+port existing-assignment))
         alive-ids (if scratch?
@@ -448,7 +465,7 @@
         freed-slots (keys (apply dissoc alive-assigned (keys keep-assigned)))
         reassign-slots (take (- total-slots-to-use (count keep-assigned))
                              (sort-slots (concat available-slots freed-slots)))
-        reassign-ids (sort (set/difference all-task-ids (set (apply concat (vals keep-assigned)))))
+        reassign-ids (set/difference sorted-all-task-ids (set (apply concat (vals keep-assigned))))
         reassignment (into {}
                            (map vector
                                 reassign-ids
@@ -460,6 +477,8 @@
       (log-message "Reassign ids: " (vec reassign-ids))
       (log-message "Available slots: " (pr-str available-slots))
       (log-message "Reassign slots: " (pr-str reassign-slots))
+      (log-message "Sorted Tasks: " (pr-str sorted-all-task-ids))
+      (log-message "Reassignment: " (pr-str reassignment))
       )
     (merge stay-assignment reassignment)
     ))
