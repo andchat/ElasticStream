@@ -76,6 +76,37 @@
     (.put ^LinkedBlockingQueue transfer-queue [task tuple])
     ))
 
+(defn get-thread-cpu-times [task-id->thread-ids]
+  (apply merge (for [[task-id thread-ids] task-id->thread-ids]
+                 (get-cpu-time thread-ids)))
+  )
+
+(defn tasks-cpu-usage [task-id->thread-ids prev-cpu-times]
+  (let [cpu-times (get-thread-cpu-times task-id->thread-ids)
+        tasks-usage (for [[task-id thread-ids] task-id->thread-ids
+                          thread-id thread-ids]
+                      (let [[t1 t2] (cpu-times thread-id)
+                            [t3 t4] (prev-cpu-times thread-id)
+                            cpu-usage (-> (/ (- t1 t3) (* (- t2 t4) 1000000))
+                                        float
+                                        (* 100)
+                                        (round 4))]
+                            {task-id cpu-usage}
+                            ))]
+        (log-message "My Threads " (pr-str task-id->thread-ids))
+        (log-message "Cpu-times: " (pr-str cpu-times))
+        (log-message "prev-Cpu-times: " (pr-str prev-cpu-times))
+        (log-message "task-usage: " (pr-str tasks-usage))
+        (apply merge-with + tasks-usage)
+        ))
+
+(defn monitor-fn [task-id->thread-ids]
+  (let [cpu-times (get-thread-cpu-times task-id->thread-ids)]
+    (log-message "I am monitoring now...")
+    (sleep-secs 20)
+    (log-message (pr-str (tasks-cpu-usage task-id->thread-ids cpu-times)))
+    ))
+
 ;; TODO: should worker even take the storm-id as input? this should be
 ;; deducable from cluster state (by searching through assignments)
 ;; what about if there's inconsistency in assignments? -> but nimbus
@@ -181,7 +212,15 @@
                             )
                           :priority Thread/MAX_PRIORITY)
         suicide-fn (mk-suicide-fn conf active)
-        tasks (dofor [tid task-ids] (task/mk-task conf storm-conf (mk-topology-context tid) (mk-user-context tid) storm-id mq-context cluster-state storm-active-atom transfer-fn suicide-fn))
+        tasks+task-id->thread-ids (dofor [tid task-ids] (task/mk-task conf storm-conf (mk-topology-context tid) (mk-user-context tid) storm-id mq-context cluster-state storm-active-atom transfer-fn suicide-fn))
+        tasks (for [[task _] tasks+task-id->thread-ids] task)
+        task-id->thread-ids (apply merge (for [[_ task-id->thread-ids] tasks+task-id->thread-ids] task-id->thread-ids))
+        monitor-thread (async-loop
+                          (fn []
+                            (when @active
+                              (monitor-fn task-id->thread-ids)
+                              0))
+                          :priority Thread/MAX_PRIORITY)
         threads [(async-loop
                   (fn []
                     (.add event-manager refresh-connections)
@@ -205,7 +244,8 @@
                     (.clear drainer)
                     0 )
                   :args-fn (fn [] [(ArrayList.) (KryoTupleSerializer. storm-conf (mk-topology-context nil))]))
-                 heartbeat-thread]
+                 heartbeat-thread
+                 monitor-thread]
         virtual-port-shutdown (when (local-mode-zmq? conf)
                                 (log-message "Launching virtual port for " supervisor-id ":" port)
                                 (msg-loader/launch-virtual-port!
@@ -245,6 +285,7 @@
                        (and
                         (.waiting? event-manager)
                         (every? (memfn waiting?) tasks)
+                        (.sleeping? monitor-thread)
                         (.sleeping? heartbeat-thread)))
              )]
     (log-message "Worker has topology config " storm-conf)

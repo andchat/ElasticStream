@@ -33,4 +33,12 @@
       )))
 
 
+(import java.lang.management.ManagementFactory)
+(def a (ManagementFactory/getThreadMXBean))
+(def b (ManagementFactory/getOperatingSystemMXBean))
 
+
+
+(.getAllThreadIds a)
+(for [id (.getAllThreadIds a)]
+         (str (.getThreadName (.getThreadInfo a id))))

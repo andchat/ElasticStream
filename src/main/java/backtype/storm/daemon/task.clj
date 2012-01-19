@@ -222,30 +222,32 @@
                           (async-loop (fn [] (exec) (when @active 0))
                                       :kill-fn report-error-and-die))
         system-threads [heartbeat-thread]
-        all-threads  (concat executor-threads system-threads)]
+        all-threads  (concat executor-threads system-threads)
+        task-id->thread-ids {task-id (mapcat (fn [t] [(.get-thread-id t)]) all-threads)}
+        shutdownable (reify
+                       Shutdownable
+                       (shutdown
+                         [this]
+                         (log-message "Shutting down task " storm-id ":" task-id)
+                         (reset! active false)
+                         ;; empty messages are skip messages (this unblocks the socket)
+                         (msg/send-local-task-empty mq-context task-id)
+                         (doseq [t all-threads]
+                           (.interrupt t)
+                           (.join t))
+                         (.remove-task-heartbeat! storm-cluster-state storm-id task-id)
+                         (.disconnect storm-cluster-state)
+                         (.close puller)
+                         (close-component task-object)
+                         (log-message "Shut down task " storm-id ":" task-id))
+                       DaemonCommon
+                       (waiting? [this]
+                         ;; executor threads are independent since they don't sleep
+                         ;; -> they block on zeromq
+                         (every? (memfn sleeping?) system-threads)
+                         ))]
     (log-message "Finished loading task " component-id ":" task-id)
-    (reify
-       Shutdownable
-       (shutdown
-        [this]
-        (log-message "Shutting down task " storm-id ":" task-id)
-        (reset! active false)
-        ;; empty messages are skip messages (this unblocks the socket)
-        (msg/send-local-task-empty mq-context task-id)
-        (doseq [t all-threads]
-          (.interrupt t)
-          (.join t))
-        (.remove-task-heartbeat! storm-cluster-state storm-id task-id)
-        (.disconnect storm-cluster-state)
-        (.close puller)
-        (close-component task-object)
-        (log-message "Shut down task " storm-id ":" task-id))
-       DaemonCommon
-       (waiting? [this]
-                 ;; executor threads are independent since they don't sleep
-                 ;; -> they block on zeromq
-                 (every? (memfn sleeping?) system-threads)
-                 ))))
+    [shutdownable task-id->thread-ids]))
 
 (defn- fail-spout-msg [^ISpout spout storm-conf msg-id ^Tuple tuple time-delta task-stats]
   (log-message "Failing message " msg-id ": " tuple)

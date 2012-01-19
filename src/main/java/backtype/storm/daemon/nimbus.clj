@@ -89,6 +89,21 @@
        :old-status status
        })))
 
+(defn optimize-transition [nimbus storm-id status]
+  (fn [time]
+    (let [delay (if time
+                  time
+                  (get (read-storm-conf (:conf nimbus) storm-id)
+                       TOPOLOGY-MESSAGE-TIMEOUT-SECS))]
+      (delay-event nimbus
+                   storm-id
+                   delay
+                   :do-optimize)
+      {:type :optimizing
+       :delay-secs delay
+       :old-status status
+       })))
+
 (defn reassign-transition [nimbus storm-id]
   (fn []
     (reassign-topology nimbus storm-id)
@@ -100,12 +115,14 @@
             :inactivate :inactive            
             :activate nil
             :rebalance (rebalance-transition nimbus storm-id status)
+            :optimize (optimize-transition nimbus storm-id status)
             :kill (kill-transition nimbus storm-id)
             }
    :inactive {:monitor (reassign-transition nimbus storm-id)
               :activate :active
               :inactivate nil
               :rebalance (rebalance-transition nimbus storm-id status)
+              :optimize (optimize-transition nimbus storm-id status)
               :kill (kill-transition nimbus storm-id)
               }
    :killed {:startup (fn [] (delay-event nimbus
@@ -126,6 +143,15 @@
                  :kill (kill-transition nimbus storm-id)
                  :do-rebalance (fn []
                                  (mk-assignments nimbus storm-id :scratch? true)
+                                 (:old-status status))
+                 }
+   :optimizing {:startup (fn [] (delay-event nimbus
+                                              storm-id
+                                              (:delay-secs status)
+                                              :do-optimize))
+                 :kill (kill-transition nimbus storm-id)
+                 :do-optimize (fn []
+                                 (log-message "Optimizing...")
                                  (:old-status status))
                  }})
 
@@ -420,12 +446,12 @@
         ;task-id+comp-id (for [task-id task-ids]
          ;                 [task-id (-> (.task-info storm-cluster-state storm-id task-id) :component-id)]
           ;                )
-        task-id+comp-id (apply merge-with concat
+        comp-id+task-id (apply merge-with concat
                           (for [task-id task-ids]
                             {(-> (.task-info storm-cluster-state storm-id task-id) :component-id) #{task-id}}
                             ))]
-    (log-message "Sort Tasks: " task-id+comp-id)
-    (apply interleave-all (vals task-id+comp-id))))
+    (log-message "Sort Tasks: " comp-id+task-id)
+    (apply interleave-all (vals comp-id+task-id))))
 
 
 ;; NEW NOTES
@@ -446,7 +472,7 @@
         storm-conf (read-storm-conf conf storm-id)
         all-task-ids (set (.task-ids storm-cluster-state storm-id))
         sorted-all-task-ids (sort-task-ids storm-cluster-state storm-id all-task-ids)
-
+        
         existing-assigned (reverse-map (:task->node+port existing-assignment))
         alive-ids (if scratch?
                     all-task-ids
@@ -465,17 +491,20 @@
         freed-slots (keys (apply dissoc alive-assigned (keys keep-assigned)))
         reassign-slots (take (- total-slots-to-use (count keep-assigned))
                              (sort-slots (concat available-slots freed-slots)))
-        reassign-ids (set/difference sorted-all-task-ids (set (apply concat (vals keep-assigned))))
+        reassign-ids (set/difference (set sorted-all-task-ids) (set (apply concat (vals keep-assigned))))
         reassignment (into {}
                            (map vector
                                 reassign-ids
                                 ;; for some reason it goes into infinite loop without limiting the repeat-seq
-                                (repeat-seq (count reassign-ids) available-slots)))
+                                (repeat-seq (count reassign-ids) reassign-slots)))
         stay-assignment (into {} (mapcat (fn [[node+port task-ids]] (for [id task-ids] [id node+port])) keep-assigned))]
     (when-not (empty? reassignment)
       (log-message "Reassigning " storm-id " to " total-slots-to-use " slots")
       (log-message "Reassign ids: " (vec reassign-ids))
       (log-message "Available slots: " (pr-str available-slots))
+      (log-message "Alive assigned: " (pr-str alive-assigned))
+      (log-message "Keep assigned: " (pr-str keep-assigned))
+      (log-message "Freed slots: " (pr-str freed-slots))
       (log-message "Reassign slots: " (pr-str reassign-slots))
       (log-message "Sorted Tasks: " (pr-str sorted-all-task-ids))
       (log-message "Reassignment: " (pr-str reassignment))
@@ -646,6 +675,18 @@
       (.remove-storm! storm-cluster-state corrupt)
       )))
 
+; (get (read-storm-conf (:conf nimbus) storm-id) TOPOLOGY-MESSAGE-TIMEOUT-SECS)
+(defn freeze-cluster-async [nimbus storm-name]
+  (let [thread (Thread.
+                 (fn []
+                   (log-message "freeze thread starting to sleep!")
+                   (sleep-secs 8)
+                   (log-message "freeze thread starting freeze!")
+                   (transition-name! nimbus storm-name [:optimize 30] true)
+                   ))]
+    (.start thread)
+    ))
+
 (defserverfn service-handler [conf]
   (log-message "Starting Nimbus with conf " conf)
   (let [nimbus (nimbus-data conf)]
@@ -687,6 +728,10 @@
             (setup-storm-static conf storm-id storm-cluster-state)
             (mk-assignments nimbus storm-id)
             (start-storm storm-name storm-cluster-state storm-id))
+
+          ;; andchat start
+          ;(freeze-cluster-async nimbus storm-name)
+          ;; andchat end
           ))
       
       (^void killTopology [this ^String name]

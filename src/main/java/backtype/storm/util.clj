@@ -4,11 +4,11 @@
   (:import [java.io FileReader])
   (:import [backtype.storm Config])
   (:import [backtype.storm.utils Time Container ClojureTimerTask])
-  (:import [java.util UUID])
+  (:import [java.util UUID Date])
   (:import [java.util.concurrent.locks ReentrantReadWriteLock])
   (:import [java.util.concurrent Semaphore])
   (:import [java.io File RandomAccessFile StringWriter PrintWriter])
-  (:import [java.lang.management ManagementFactory])
+  (:import [java.lang.management ManagementFactory ThreadMXBean])
   (:import [org.apache.commons.exec DefaultExecutor CommandLine])
   (:import [org.apache.commons.io FileUtils])
   (:import [org.apache.commons.exec ExecuteException])
@@ -20,6 +20,23 @@
   (:use [backtype.storm log])
   (:use [clojure.contrib.def :only [defnk]])
   )
+
+(defn round [number precision]
+         (let [multiplier (Math/pow 10 precision)]
+         (-> (* number multiplier)
+           int
+           (/ multiplier)
+           float)))
+
+;; TODO: Here I should divede the cpu time with the number of cpus
+(defn get-cpu-time [thread-ids]
+  (let [thread-MX-Bean (ManagementFactory/getThreadMXBean)
+        date (Date.)]
+    (apply merge
+      (map (fn[id]
+             {id [(.getThreadCpuTime thread-MX-Bean id)
+                          (.getTime date)]})
+        thread-ids))))
 
 (defn local-hostname []
   (.getCanonicalHostName (InetAddress/getLocalHost)))
@@ -214,6 +231,7 @@
   (start [this])
   (join [this])
   (interrupt [this])
+  (get-thread-id [this])
   (sleeping? [this]))
 
 ;; afn returns amount of time to sleep
@@ -258,9 +276,11 @@
         (.join thread))
       (interrupt [this]
         (.interrupt thread))
+      (get-thread-id [this]
+        (.getId thread))
       (sleeping? [this]
         (Time/isThreadWaiting thread)
-        ))
+      ))
       ))
 
 (defn filter-map-val [afn amap]
