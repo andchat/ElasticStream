@@ -35,8 +35,7 @@
 (def LS-ID "supervisor-id")
 (def LS-LOCAL-ASSIGNMENTS "local-assignments")
 (def LS-APPROVED-WORKERS "approved-workers")
-
-
+(def LS-USAGE-STATS "approved-workers")
 
 (defrecord WorkerHeartbeat [time-secs storm-id task-ids port])
 

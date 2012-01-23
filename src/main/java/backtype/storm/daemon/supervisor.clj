@@ -64,6 +64,10 @@
     (.get local-state LS-WORKER-HEARTBEAT)
     ))
 
+(defn read-worker-cpu-usage [conf id]
+  (let [local-state (worker-state conf id)]
+    (.get local-state LS-USAGE-STATS)
+    ))
 
 (defn my-worker-ids [conf]
   (read-dir-contents (worker-root conf)))
@@ -77,6 +81,13 @@
         [id (read-worker-heartbeat conf id)]))
     ))
 
+(defn read-worker-cpu-usages
+  [conf]
+  (let [ids (my-worker-ids conf)]
+    (into {}
+      (dofor [id ids]
+        [id (read-worker-cpu-usage conf id)]))
+    ))
 
 (defn matches-an-assignment? [worker-heartbeat assigned-tasks]
   (let [local-assignment (assigned-tasks (:port worker-heartbeat))]
@@ -290,12 +301,25 @@
                                                 (conf SUPERVISOR-SLOTS-PORTS)
                                                 (uptime))))
         _ (heartbeat-fn)
+
+        ;; TODO the supervisor should check the timme signature of the stats and
+        ;; end to nimbus only when are renewed
+        monitor-fn (fn[] (let [worker-util (read-worker-cpu-usages conf)]
+                     (log-message "My workers usage:" (pr-str worker-util))
+                     (.set-supervisor-util! storm-cluster-state supervisor-id (apply merge-with + (vals worker-util)))
+                     ))
         ;; should synchronize supervisor so it doesn't launch anything after being down (optimization)
         threads (concat
                   [(async-loop
                      (fn []
                        (heartbeat-fn)
                        (when @active (conf SUPERVISOR-HEARTBEAT-FREQUENCY-SECS))
+                       )
+                     :priority Thread/MAX_PRIORITY)
+                   (async-loop
+                     (fn []
+                       (monitor-fn)
+                       (when @active 5)
                        )
                      :priority Thread/MAX_PRIORITY)]
                    ;; This isn't strictly necessary, but it doesn't hurt and ensures that the machine stays up

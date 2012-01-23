@@ -98,6 +98,7 @@
   (task-heartbeat [this storm-id task-id]) ;; returns nil if doesn't exist
   (supervisors [this callback])
   (supervisor-info [this supervisor-id])  ;; returns nil if doesn't exist
+  (get-supervisor-util! [this supervisor-id])
 
   (setup-heartbeats! [this storm-id])
   (teardown-heartbeats! [this storm-id])
@@ -110,6 +111,7 @@
   (task-heartbeat! [this storm-id task-id info])
   (remove-task-heartbeat! [this storm-id task-id])
   (supervisor-heartbeat! [this supervisor-id info])
+  (set-supervisor-util! [this supervisor-id stats])
   (activate-storm! [this storm-id storm-base])
   (update-storm! [this storm-id new-elems])
   (remove-storm-base! [this storm-id])
@@ -129,6 +131,7 @@
 (def SUPERVISORS-ROOT "supervisors")
 (def TASKBEATS-ROOT "taskbeats")
 (def TASKERRORS-ROOT "taskerrors")
+(def SUPERVISORS-UTIL-ROOT "supsutil")
 
 (def ASSIGNMENTS-SUBTREE (str "/" ASSIGNMENTS-ROOT))
 (def TASKS-SUBTREE (str "/" TASKS-ROOT))
@@ -136,6 +139,7 @@
 (def SUPERVISORS-SUBTREE (str "/" SUPERVISORS-ROOT))
 (def TASKBEATS-SUBTREE (str "/" TASKBEATS-ROOT))
 (def TASKERRORS-SUBTREE (str "/" TASKERRORS-ROOT))
+(def SUPERVISORS-UTIL-SUBTREE (str "/" SUPERVISORS-UTIL-ROOT))
 
 (defn supervisor-path [id]
   (str SUPERVISORS-SUBTREE "/" id))
@@ -164,6 +168,8 @@
 (defn taskerror-path [storm-id task-id]
   (str (taskerror-storm-root storm-id) "/" task-id))
 
+(defn supervisor-util-path [supervisor-id]
+  (str SUPERVISORS-UTIL-SUBTREE "/" supervisor-id))
 
 (defn- issue-callback! [cb-atom]
   (let [cb @cb-atom]
@@ -267,6 +273,10 @@
         (maybe-deserialize (get-data cluster-state (supervisor-path supervisor-id) false))
         )
 
+      (get-supervisor-util! [this supervisor-id]
+        (maybe-deserialize (get-data cluster-state (supervisor-util-path supervisor-id) false))
+        )
+      
       (set-task! [this storm-id task-id info]
         (set-data cluster-state (task-path storm-id task-id) (Utils/serialize info))
         )
@@ -298,6 +308,10 @@
 
       (supervisor-heartbeat! [this supervisor-id info]
         (set-ephemeral-node cluster-state (supervisor-path supervisor-id) (Utils/serialize info))
+        )
+
+      (set-supervisor-util! [this supervisor-id stats]
+        (set-ephemeral-node cluster-state (supervisor-util-path supervisor-id) (Utils/serialize stats))
         )
 
       (activate-storm! [this storm-id storm-base]

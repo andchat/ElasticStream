@@ -687,6 +687,27 @@
     (.start thread)
     ))
 
+(defn get-optimization-strategy [supervisor-ids->task-usage]
+  ;; Is the problem to a couple of nodes or
+
+  ;; Calculate variance? Then compare with threshold variance
+
+
+  )
+
+
+(defn check-cluster-usage-fn [storm-cluster-state]
+  (let [supervisor-ids (.supervisors storm-cluster-state nil)
+        supervisor-ids->task-usage(when supervisor-ids
+                                    (apply merge
+                                      (map
+                                        (fn [id]
+                                          {id (.get-supervisor-util! storm-cluster-state id)})
+                                        supervisor-ids)))]
+    (log-message "I am optimizing...")
+    (log-message "Task Usage:" (pr-str supervisor-ids->task-usage))
+    ))
+
 (defserverfn service-handler [conf]
   (log-message "Starting Nimbus with conf " conf)
   (let [nimbus (nimbus-data conf)]
@@ -701,6 +722,15 @@
                             (transition! nimbus storm-id :monitor))
                           (do-cleanup nimbus)
                           ))
+    (async-loop (fn []
+                  (check-cluster-usage-fn (:storm-cluster-state nimbus))
+                  (conf NIMBUS-MONITOR-FREQ-SECS)
+                  )
+      :priority Thread/MAX_PRIORITY)
+    ;(schedule-recurring (:timer nimbus)
+    ;                    0
+    ;                    (conf NIMBUS-MONITOR-FREQ-SECS)
+    ;                    (optimize-fn (:storm-cluster-state nimbus)))
     (reify Nimbus$Iface
       (^void submitTopology
         [this ^String storm-name ^String uploadedJarLocation ^String serializedConf ^StormTopology topology]

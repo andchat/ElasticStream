@@ -100,11 +100,15 @@
         (apply merge-with + tasks-usage)
         ))
 
-(defn monitor-fn [task-id->thread-ids]
+(defn monitor-fn [conf worker-id task-id->thread-ids]
   (let [cpu-times (get-thread-cpu-times task-id->thread-ids)]
-    (log-message "I am monitoring now...")
     (sleep-secs 20)
+    (log-message "I am monitoring now...")
     (log-message (pr-str (tasks-cpu-usage task-id->thread-ids cpu-times)))
+
+    (.put (worker-state conf worker-id)
+        LS-USAGE-STATS
+        (tasks-cpu-usage task-id->thread-ids cpu-times))
     ))
 
 ;; TODO: should worker even take the storm-id as input? this should be
@@ -218,7 +222,7 @@
         monitor-thread (async-loop
                           (fn []
                             (when @active
-                              (monitor-fn task-id->thread-ids)
+                              (monitor-fn conf worker-id task-id->thread-ids)
                               0))
                           :priority Thread/MAX_PRIORITY)
         threads [(async-loop
