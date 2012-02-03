@@ -6,7 +6,7 @@
   (:import [java.nio ByteBuffer])
   (:import [java.nio.channels Channels WritableByteChannel])
   (:use [backtype.storm bootstrap])
-  (:use [backtype.storm.daemon common])
+  (:use [backtype.storm.daemon common optimiser])
   (:use [clojure.contrib.def :only [defnk]])
   (:gen-class))
 
@@ -689,12 +689,8 @@
 
 (defn get-optimization-strategy [supervisor-ids->task-usage]
   ;; Is the problem to a couple of nodes or
-
   ;; Calculate variance? Then compare with threshold variance
-
-
   )
-
 
 (defn check-cluster-usage-fn [storm-cluster-state]
   (let [supervisor-ids (.supervisors storm-cluster-state nil)
@@ -704,13 +700,17 @@
                                         (fn [id]
                                           {id (.get-supervisor-util! storm-cluster-state id)})
                                         supervisor-ids)))]
-    (log-message "I am optimizing...")
-    (log-message "Task Usage:" (pr-str supervisor-ids->task-usage))
+    (optimize storm-cluster-state supervisor-ids->task-usage)
     ))
 
 (defserverfn service-handler [conf]
   (log-message "Starting Nimbus with conf " conf)
-  (let [nimbus (nimbus-data conf)]
+  (let [nimbus (nimbus-data conf)
+        monitor-thread (async-loop (fn []
+                                     (check-cluster-usage-fn (:storm-cluster-state nimbus))
+                                     (conf NIMBUS-MONITOR-FREQ-SECS)
+                                     )
+                         :priority Thread/MAX_PRIORITY)]
     (cleanup-corrupt-topologies! nimbus)
     (doseq [storm-id (.active-storms (:storm-cluster-state nimbus))]
       (transition! nimbus storm-id :startup))
@@ -722,11 +722,6 @@
                             (transition! nimbus storm-id :monitor))
                           (do-cleanup nimbus)
                           ))
-    (async-loop (fn []
-                  (check-cluster-usage-fn (:storm-cluster-state nimbus))
-                  (conf NIMBUS-MONITOR-FREQ-SECS)
-                  )
-      :priority Thread/MAX_PRIORITY)
     ;(schedule-recurring (:timer nimbus)
     ;                    0
     ;                    (conf NIMBUS-MONITOR-FREQ-SECS)
@@ -919,6 +914,8 @@
       (shutdown [this]
         (log-message "Shutting down master")
         (cancel-timer (:timer nimbus))
+        (.interrupt monitor-thread)
+        (.join monitor-thread)
         (.disconnect (:storm-cluster-state nimbus))
         (log-message "Shut down master")
         )

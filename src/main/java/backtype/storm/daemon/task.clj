@@ -149,7 +149,7 @@
 
         ;; TODO: consider DRYing things up and moving stats / tuple -> multiple components code here
         task-transfer-fn (fn [task ^Tuple tuple]
-                           (transfer-fn task tuple)
+                           (transfer-fn task-id task tuple)
                            )
         task-readable-name (get-readable-name topology-context)
 

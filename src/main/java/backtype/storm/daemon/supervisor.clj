@@ -304,9 +304,13 @@
 
         ;; TODO the supervisor should check the timme signature of the stats and
         ;; end to nimbus only when are renewed
-        monitor-fn (fn[] (let [worker-util (read-worker-cpu-usages conf)]
+        monitor-fn (fn[] (let [worker-util (read-worker-cpu-usages conf)
+                               worker-cpu (apply merge-with + (map (fn [[a1 a2]] a1) (vals worker-util)))
+                               worker-IPC (apply merge-with + (map (fn [[a1 a2]] a2) (vals worker-util)))]
                      (log-message "My workers usage:" (pr-str worker-util))
-                     (.set-supervisor-util! storm-cluster-state supervisor-id (apply merge-with + (vals worker-util)))
+                     (log-message "My workers CPU:" (pr-str worker-cpu))
+                     (log-message "My workers IPC:" (pr-str worker-IPC))
+                     (.set-supervisor-util! storm-cluster-state supervisor-id [worker-cpu worker-IPC])
                      ))
         ;; should synchronize supervisor so it doesn't launch anything after being down (optimization)
         threads (concat

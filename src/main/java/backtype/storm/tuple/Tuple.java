@@ -65,6 +65,14 @@ public class Tuple implements ILookup {
     public int size() {
         return values.size();
     }
+
+    public int sizeInBytes() {
+        int totalLength = 0;
+        for (Object value : this.values)
+            totalLength += Utils.serialize(value).length;
+
+        return totalLength;
+    }
     
     public int fieldIndex(String field) {
         return getFields().fieldIndex(field);

@@ -10,3 +10,7 @@
 
 (defn list-hash-code [^List alist]
   (.hashCode alist))
+
+;(defn tuple-size [^Tuple tuple]
+;  (apply + (map #(.length (Utils/serialize %)) (.getValues tuple)))
+;  )

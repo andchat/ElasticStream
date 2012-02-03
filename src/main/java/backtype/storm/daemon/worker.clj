@@ -3,6 +3,7 @@
   (:use [backtype.storm bootstrap])
   (:import [java.util.concurrent LinkedBlockingQueue])
   (:require [backtype.storm.daemon [task :as task]])
+  (:require [backtype.storm [tuple :as tuple]])
   (:gen-class))
 
 (bootstrap)
@@ -71,9 +72,12 @@
             (-> (reverse-map task->component) (select-keys components) vals)))
     ))
 
-(defn mk-transfer-fn [transfer-queue]
-  (fn [task ^Tuple tuple]
-    (.put ^LinkedBlockingQueue transfer-queue [task tuple])
+(defn mk-transfer-fn [transfer-queue task-id->IPC]
+  (fn [left-task right-task ^Tuple tuple]
+    (.put ^LinkedBlockingQueue transfer-queue [right-task tuple])
+    (swap! task-id->IPC (partial merge-with +) {[left-task right-task] (.sizeInBytes tuple)})
+
+    (log-message "IPC:" left-task " " right-task " " (pr-str @task-id->IPC))
     ))
 
 (defn get-thread-cpu-times [task-id->thread-ids]
@@ -100,15 +104,18 @@
         (apply merge-with + tasks-usage)
         ))
 
-(defn monitor-fn [conf worker-id task-id->thread-ids]
+(defn monitor-fn [conf worker-id task-id->thread-ids task-id->IPC]
   (let [cpu-times (get-thread-cpu-times task-id->thread-ids)]
     (sleep-secs 20)
     (log-message "I am monitoring now...")
-    (log-message (pr-str (tasks-cpu-usage task-id->thread-ids cpu-times)))
+    (log-message "tasks-cpu-usage " (pr-str (tasks-cpu-usage task-id->thread-ids cpu-times)))
+    (log-message "task-id->IPC" (pr-str @task-id->IPC))
 
     (.put (worker-state conf worker-id)
         LS-USAGE-STATS
-        (tasks-cpu-usage task-id->thread-ids cpu-times))
+        [(tasks-cpu-usage task-id->thread-ids cpu-times) @task-id->IPC])
+
+    (reset! task-id->IPC {})
     ))
 
 ;; TODO: should worker even take the storm-id as input? this should be
@@ -159,10 +166,11 @@
         endpoint-socket-lock (mk-rw-lock)
         node+port->socket (atom {})
         task->node+port (atom {})
+        task-id->IPC(atom {})
 
         transfer-queue (LinkedBlockingQueue.) ; possibly bound the size of it
         
-        transfer-fn (mk-transfer-fn transfer-queue)
+        transfer-fn (mk-transfer-fn transfer-queue task-id->IPC)
         refresh-connections (fn this
                               ([]
                                 (this (fn [& ignored] (.add event-manager this))))
@@ -222,7 +230,7 @@
         monitor-thread (async-loop
                           (fn []
                             (when @active
-                              (monitor-fn conf worker-id task-id->thread-ids)
+                              (monitor-fn conf worker-id task-id->thread-ids task-id->IPC)
                               0))
                           :priority Thread/MAX_PRIORITY)
         threads [(async-loop
