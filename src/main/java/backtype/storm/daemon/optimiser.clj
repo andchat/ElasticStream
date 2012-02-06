@@ -23,8 +23,13 @@
       (keys ltask+rtask->IPC))))
 
 
-(defn fuse [left right]
-  (log-message "fuse: " left " " right)
+(defn fuse [clusters comp->cluster left right]
+
+  ;(swap! clusters assoc-in [(str left right)] )
+  (swap! comp->cluster assoc-in [left] (str left right))
+  (swap! comp->cluster assoc-in [right] (str left right))
+  (log-message "fuse: " left " " right
+    " clusters:" @clusters " comp->cluster:" @comp->cluster)
   )
 
 (defn smaller-col [c1 c2]
@@ -35,50 +40,142 @@
   (if (> (count c1)(count c2))
     c1 c2))
 
+(defn vectorize [[k v]]
+  (conj v k))
+
+; It should be redeveloped more efficiently
 (defn calc-min-balanced-splits [l-tasks r-tasks]
-  (let [small (smaller-col l-tasks r-tasks)
-        large (larger-col l-tasks r-tasks)]
-    
-    (apply merge-with concat
-      (map
-        (fn[t1 t2]{t1 [t2]})
-        (repeat-seq (count large) small) large))
+  (let [small-c (smaller-col l-tasks r-tasks)
+        large-c (larger-col l-tasks r-tasks)]
+    ;(map (fn[[k v]] (conj v k))
+      (apply merge-with concat
+        (map
+          (fn[t1 t2]{t1 [t2]})
+          (repeat-seq (count large-c) small-c) large-c))
+      ;)
     ))
 
-(defn split [splits component->task left right capacity]
-  (let [left-tasks (component->task left)
-        right-tasks (component->task right)]
+; Lets keep it simple at the moment (and fast...) and just
+; calc by (comp usage/num tasks)*split num tasks
+; (instead if summing each task util)
+(defn get-split-size [min-bal-split component->usage left right task-count]
+  (-> (+ (component->usage left) (component->usage right))
+    (/ task-count)
+    (* (count (vectorize min-bal-split)))
+    ))
 
+(defn make-splits! [splits min-bal-splits split-size capacity
+                    component->task left right]
+  (let  [usage-sum (atom 0)
+         splits-set(apply merge-with merge
+                     (for [[k v] min-bal-splits]
+                       (if (< (+ @usage-sum split-size) capacity)
+                         (do
+                           (swap! usage-sum (partial + split-size))
+                           {1 {k v}})
+                         {2 {k v}}
+                         )))]
     (swap! splits assoc-in [left] [(str left ".1") (str left ".2")])
     (swap! splits assoc-in [right] [(str right ".1") (str right ".2")])
 
-    (log-message "split: " left " " right " " (pr-str splits))
+    (swap! component->task assoc-in [(str left ".1")] [33 4 5])
+    (swap! component->task assoc-in [(str left ".2")] [33 4 5])
+    (swap! component->task assoc-in [(str right ".1")] [33 4 5])
+    (swap! component->task assoc-in [(str right ".2")] [33 4 5])
+
+    (log-message "split: " left " " right " @splits:" (pr-str @splits)
+      " splits-set:" (pr-str splits-set)
+      " min-bal-splits:" (pr-str min-bal-splits) " split-size:" split-size
+      " component->task" @component->task)
+    splits-set
     ))
 
+(defn split [splits component->task component->usage
+             left right capacity]
+  (let [left-tasks (@component->task left)
+        right-tasks (@component->task right)
+        min-balanced-splits (calc-min-balanced-splits
+                              left-tasks right-tasks)
+        split-size (get-split-size
+                     (first min-balanced-splits)
+                     component->usage left right
+                     (+ (count left-tasks)(count right-tasks)))]
+    (if (< split-size capacity)
+      (make-splits! splits min-balanced-splits split-size
+        capacity component->task left right)
+      nil
+      )))
+
 (defn allocate-vertex-pair [allocated-comps component->task splits
-                            comp->usage [[left right] IPC]]
-  (let [load-contraint 80
+                            comp->usage clusters comp->cluster
+                            [[left right] IPC]]
+  (let [load-contraint 85
         node-cpu-cap 100
-        tolerance 15
         available-nodes 10
         total-usage (+ (comp->usage left) (comp->usage right))]
     ;(when (or (contains? @splits left) (contains? @splits right))
     ;  )
+    ;(if (comp->cluster left)
 
+   ;   )
+   ; (if (comp->cluster right)
 
-    (if (< total-usage (+ load-contraint tolerance))
-      (fuse left right) 
-      (split splits component->task left right 100)
+   ;   )
+
+    (if (< total-usage load-contraint)
+      (fuse clusters comp->cluster left right)
+      (split splits component->task comp->usage left right load-contraint)
       )
     ))
 
+(defn mk-allocator-data [storm-cluster-state supervisor-ids->task-usage]
+  {:task->component (get-task->component storm-cluster-state)
+   :component->task (atom (apply merge-with concat
+                            (map
+                              (fn [[task component]]
+                                {component [task]})
+                              :task->component)))
+   :task->usage (apply merge-with +
+                  (map (fn[[a1 a2]] a1)
+                    (vals supervisor-ids->task-usage)))
+   :comp->usage (apply merge-with +
+                  (map (fn[[task usage]]
+                         {(:task->component task) usage})
+                    :task->usage))
+   :ltask+rtask->IPC (apply merge-with +
+                       (map (fn[[a1 a2]] a2)
+                         (vals supervisor-ids->task-usage)))
+   :lcomp+rcomp->IPC (get-lcomp+rcomp->IPC :task->component :ltask+rtask->IPC)
+   :unlinked-tasks (set/difference
+                     (set (keys :task->component))
+                     (set (apply concat (keys :ltask+rtask->IPC))))
+   :sorted-comps (map (fn[[keys IPC]] keys)
+                   (sort-by second > :lcomp+rcomp->IPC))
+   :queue (PriorityQueue.
+            (if (> (count :lcomp+rcomp->IPC) 0)
+              (count :lcomp+rcomp->IPC)
+              1)
+            (reify Comparator
+              (compare [this [k1 v1] [k2 v2]]
+                (- v2 v1)
+                )
+              (equals [this obj]
+                true
+                )))
+   :splits (atom {})
+   :clusters (atom {})
+   :comp->cluster (atom {})
+   })
+
 (defn optimize [storm-cluster-state supervisor-ids->task-usage]
-  (let [task->component (get-task->component storm-cluster-state)
-        component->task (apply merge-with concat
-                          (map
-                            (fn [[task component]]
-                              {component [task]})
-                            task->component))
+  (let [allocator-data (mk-allocator-data supervisor-ids->task-usage)
+
+        task->component (get-task->component storm-cluster-state)
+        component->task (atom (apply merge-with concat
+                                (map
+                                  (fn [[task component]]
+                                    {component [task]})
+                                  task->component)))
         task->usage (apply merge-with +
                       (map (fn[[a1 a2]] a1)
                         (vals supervisor-ids->task-usage)))
@@ -107,9 +204,8 @@
                     true
                     )))
         splits (atom {})
-        comp->cluster (atom {})
-        allocated-comps (atom {})
-        ]
+        clusters (atom {})
+        comp->cluster (atom {})]
 
     ;(map #((.offer queue %) (pr-str %)) lcomp+rcomp->IPC)
     (doall (map #(.offer queue %) lcomp+rcomp->IPC)) ;nlogn
@@ -117,9 +213,9 @@
     (log-message "queue:" (pr-str queue))
     
     (while (.peek queue)
-        (allocate-vertex-pair 
-          allocated-comps component->task
-          splits comp->usage (.poll queue)))
+      (allocate-vertex-pair
+        clusters component->task
+        splits comp->usage clusters comp->cluster (.poll queue)))
 
     ;(doall (map (fn[[left right]]
     ;              (allocate-vertex-pair comp->usage left right))
@@ -133,7 +229,7 @@
     ;(swap! a assoc-in ["1"] 33)
     
     (log-message "task->component:" (pr-str task->component))
-    (log-message "component->task:" (pr-str component->task))
+    (log-message "component->task:" (pr-str @component->task))
     (log-message "task->usage:" (pr-str task->usage))
     (log-message "comp->usage:" (pr-str comp->usage))
     (log-message "ltask+rtask->IPC:" (pr-str ltask+rtask->IPC))
