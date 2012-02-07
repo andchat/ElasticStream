@@ -700,7 +700,7 @@
                                         (fn [id]
                                           {id (.get-supervisor-util! storm-cluster-state id)})
                                         supervisor-ids)))]
-    (optimize storm-cluster-state supervisor-ids->task-usage)
+    (allocate-tasks storm-cluster-state supervisor-ids->task-usage)
     ))
 
 (defserverfn service-handler [conf]
