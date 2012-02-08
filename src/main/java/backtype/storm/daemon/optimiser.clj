@@ -22,20 +22,35 @@
             (ltask+rtask->IPC [left right])})
       (keys ltask+rtask->IPC))))
 
+; linear search... (has to be improved)
+(defn find-max-space [clusters]
+    (apply max-key (fn [[k v]] v) @clusters))
 
 (defn fuse [allocator-data left right]
   (let [comp->cluster (:comp->cluster allocator-data)
         clusters (:clusters allocator-data)
         comp->usage (:comp->usage allocator-data)
-        counter (:counter allocator-data)
-        next-id (counter)]
+        left-cluster (@comp->cluster left)
+        right-cluster (@comp->cluster right)]
+    
+    (when left-cluster
+      (swap! comp->cluster assoc-in [right] left-cluster)
+      (swap! clusters update-in [left-cluster] #(- % (comp->usage right))))
 
-    ; Bookeeping
-    (swap! clusters update-in [next-id] 
-      (fn [a b] (if a (+ a b) b))
-      (+ (comp->usage left) (comp->usage right)))
-    (swap! comp->cluster assoc-in [left] next-id)
-    (swap! comp->cluster assoc-in [right] next-id)
+    (when right-cluster
+      (swap! comp->cluster assoc-in [left] right-cluster)
+      (swap! clusters update-in [right-cluster] #(- % (comp->usage left))))
+
+    (when-not (and left-cluster right-cluster)
+      (let [node (first (find-max-space clusters))
+            total-usage (+ (comp->usage left)(comp->usage right))]
+        
+        (swap! comp->cluster assoc-in [left] node)
+        (swap! comp->cluster assoc-in [right] node)
+        (swap! clusters update-in [node]
+          #(- % total-usage))
+        ))
+
     (log-message "fuse: " left " " right " clusters:" @clusters " comp->cluster:" @comp->cluster)
     ))
 
@@ -121,8 +136,6 @@
 
 (defn fits? [allocator-data left right]
   (let [comp->usage (:comp->usage allocator-data)
-        available-nodes (:available-nodes allocator-data)
-        load-constraint (:load-constraint allocator-data)
         total-usage (+ (comp->usage left) (comp->usage right))
         clusters (:clusters allocator-data)
         comp->cluster (:comp->cluster allocator-data)]
@@ -130,17 +143,13 @@
     ; if one of the vertices is already fused then we must put the other vertex
     ; in the same cluster
     (if (contains? @comp->cluster left)
-      ( > (- load-constraint (@clusters (@comp->cluster left)))
+      ( >= (@clusters (@comp->cluster left))
         (comp->usage right))
       (if (contains? @comp->cluster right)
-        ( > (- load-constraint (@comp->cluster right))
+        ( >= (@clusters (@comp->cluster right))
           (comp->usage left))
-        (if (and (< (count @clusters) available-nodes)
-              (< total-usage load-constraint))
-          true
-          true)     
-        )
-      )
+        ( >= (second (find-max-space clusters))
+          total-usage)))
     ))
 
 (defn allocate-vertex-pair [allocator-data [[left right] IPC]]
@@ -202,21 +211,28 @@
      :splits (atom {})
      :clusters (atom {})
      :comp->cluster (atom {})
-     :counter (mk-counter)
      :load-constraint 85
-     :available-nodes 10
+     :available-nodes 4
      }))
 
 (defn allocate-tasks [storm-cluster-state supervisor-ids->task-usage]
   (let [allocator-data (mk-allocator-data storm-cluster-state
                          supervisor-ids->task-usage)
-        queue (:queue allocator-data)]
+        queue (:queue allocator-data)
+        clusters (:clusters allocator-data)
+        available-nodes (:available-nodes allocator-data)
+        load-constraint (:load-constraint allocator-data)]
 
     ;(map #((.offer queue %) (pr-str %)) lcomp+rcomp->IPC)
     (doall (map #(.offer queue %)
              (:lcomp+rcomp->IPC allocator-data))) ;nlogn (log(n!))
 
+    (doall (map
+      #(swap! clusters update-in [%] (fn[a]load-constraint))
+      (range available-nodes)))
+    
     (log-message "queue:" (pr-str queue))
+    (log-message "clusters:" (pr-str clusters))
     
     (while (.peek queue)
       (allocate-vertex-pair allocator-data
