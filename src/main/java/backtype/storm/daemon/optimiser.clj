@@ -41,7 +41,7 @@
       (swap! comp->cluster assoc-in [left] right-cluster)
       (swap! clusters update-in [right-cluster] #(- % (comp->usage left))))
 
-    (when-not (and left-cluster right-cluster)
+    (when-not (or left-cluster right-cluster)
       (let [node (first (find-max-space clusters))
             total-usage (+ (comp->usage left)(comp->usage right))]
         
@@ -51,7 +51,8 @@
           #(- % total-usage))
         ))
 
-    (log-message "fuse: " left " " right " clusters:" @clusters " comp->cluster:" @comp->cluster)
+    (log-message "fuse: " left " " right " clusters:" @clusters 
+      " comp->cluster:" @comp->cluster)
     ))
 
 (defn smaller-col [c1 c2]
@@ -63,16 +64,16 @@
     c1 c2))
 
 (defn vectorize [[k v]]
-  (conj v k))
+  (into v k))
 
 ; It should be redeveloped more efficiently
 (defn calc-min-balanced-splits [l-tasks r-tasks]
   (let [small-c (smaller-col l-tasks r-tasks)
         large-c (larger-col l-tasks r-tasks)]
     ;(map (fn[[k v]] (conj v k))
-      (apply merge-with concat
+      (apply merge-with into
         (map
-          (fn[t1 t2]{t1 [t2]})
+          (fn[t1 t2]{[t1] [t2]})
           (repeat-seq (count large-c) small-c) large-c))
       ;)
     ))
@@ -86,40 +87,67 @@
     (* (count (vectorize min-bal-split)))
     ))
 
+(defn split-tasks [splits-set split-fn node-fn]
+  (into []
+    (apply concat
+      (-> (vals splits-set)
+        split-fn
+        node-fn))))
+
 (defn make-splits! [allocator-data min-bal-splits split-size
-                    left right]
+                    capacity left right fused?]
   (let  [component->task (:component->task allocator-data)
-         load-contraint  (:load-contraint allocator-data)
          splits (:splits allocator-data)
+         queue (:queue allocator-data)
 
          usage-sum (atom 0)
          splits-set(apply merge-with merge
                      (for [[k v] min-bal-splits]
-                       (if (< (+ @usage-sum split-size) load-contraint)
+                       (if (< (+ @usage-sum split-size) capacity)
                          (do
                            (swap! usage-sum (partial + split-size))
                            {1 {k v}})
                          {2 {k v}}
-                         )))]
+                         )))
+         _ (log-message "split-set: " splits-set)
+         
+         l-cnt (count (@component->task left))
+         r-cnt (count (@component->task right))
+         l-fn (if (< l-cnt r-cnt) keys vals)
+         r-fn (if (< r-cnt l-cnt) keys vals)
+
+         s1-left (split-tasks splits-set first l-fn)
+         s1-right (split-tasks splits-set first r-fn)
+         s2-left (split-tasks splits-set second l-fn)
+         s2-right (split-tasks splits-set second r-fn)]
     (swap! splits assoc-in [left] [(str left ".1") (str left ".2")])
     (swap! splits assoc-in [right] [(str right ".1") (str right ".2")])
 
-    (swap! component->task assoc-in [(str left ".1")] [33 4 5])
-    (swap! component->task assoc-in [(str left ".2")] [33 4 5])
-    (swap! component->task assoc-in [(str right ".1")] [33 4 5])
-    (swap! component->task assoc-in [(str right ".2")] [33 4 5])
+    (swap! component->task assoc-in [(str left ".1")] s1-left)
+    (swap! component->task assoc-in [(str left ".2")] s1-right)
+    (swap! component->task assoc-in [(str right ".1")] s2-left)
+    (swap! component->task assoc-in [(str right ".2")] s2-right)
+
+    ;(fuse allocator-data (str left ".1") (str right ".1"))
 
     (log-message "split: " left " " right " @splits:" (pr-str @splits)
       " splits-set:" (pr-str splits-set)
       " min-bal-splits:" (pr-str min-bal-splits) " split-size:" split-size
       " component->task" @component->task)
-    splits-set
+    nil
     ))
 
 (defn split [allocator-data left right]
   (let [component->task (:component->task allocator-data)
         component->usage (:comp->usage allocator-data)
-        load-contraint (:load-contraint allocator-data)
+        comp->cluster (:comp->cluster allocator-data)
+        clusters (:clusters allocator-data)
+        fused? (or (contains? @comp->cluster left)
+                 (contains? @comp->cluster right))
+        destination (cond
+                      (contains? @comp->cluster left) (@clusters (@comp->cluster left))
+                      (contains? @comp->cluster right) (@clusters (@comp->cluster right))
+                      :else (first (find-max-space clusters)))
         left-tasks (@component->task left)
         right-tasks (@component->task right)
         min-balanced-splits (calc-min-balanced-splits
@@ -128,9 +156,10 @@
                      (first min-balanced-splits)
                      component->usage left right
                      (+ (count left-tasks)(count right-tasks)))]
-    (if (< split-size load-contraint)
+    (log-message "split: " split-size)
+    (if (<= split-size (@clusters destination))
       (make-splits! allocator-data min-balanced-splits split-size
-        left right)
+        (@clusters destination) left right fused?)
       nil
       )))
 
@@ -154,7 +183,6 @@
 
 (defn allocate-vertex-pair [allocator-data [[left right] IPC]]
   (let [comp->cluster (:comp->cluster allocator-data)]
-
     ; if both nodes are already fused we are finished from here
     (when-not (and (contains? @comp->cluster left)
                 (contains? @comp->cluster right))
@@ -162,14 +190,6 @@
         (fuse allocator-data left right)
         (split allocator-data left right)
         ))
-    ;(when (or (contains? @splits left) (contains? @splits right))
-    ;  )
-    ;(if (comp->cluster left)
-
-    ;   )
-    ; (if (comp->cluster right)
-
-    ;   )
     ))
 
 (defn mk-allocator-data [storm-cluster-state supervisor-ids->task-usage]
@@ -211,7 +231,7 @@
      :splits (atom {})
      :clusters (atom {})
      :comp->cluster (atom {})
-     :load-constraint 85
+     :load-constraint 60
      :available-nodes 4
      }))
 

@@ -77,7 +77,7 @@
     (.put ^LinkedBlockingQueue transfer-queue [right-task tuple])
     (swap! task-id->IPC (partial merge-with +) {[left-task right-task] (.sizeInBytes tuple)})
 
-    (log-message "IPC:" left-task " " right-task " " (pr-str @task-id->IPC))
+    ;(log-message "IPC:" left-task " " right-task " " (pr-str @task-id->IPC))
     ))
 
 (defn get-thread-cpu-times [task-id->thread-ids]
