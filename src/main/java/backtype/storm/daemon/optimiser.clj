@@ -108,9 +108,28 @@
     (map (fn [s] {(first s) (get-split-usage (vectorize s) task->usage)})
     min-balanced-splits)))
 
+; the communications are l-tasks*r-tasks. We avoid to probe for all these
+; those pairs and we approximate the new IPC
+(defn calc-split-IPC [allocator-data l-parent r-parent l-s-tasks r-s-tasks]
+  (let [component->task (:component->task allocator-data)
+        lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
+        parent-IPC (@lcomp+rcomp->IPC [l-parent r-parent])
+        l-p-cnt (count (@component->task l-parent))
+        r-p-cnt (count (@component->task r-parent))
+        l-cnt (count l-s-tasks)
+        r-cnt (count r-s-tasks)
+        single-cost (-> (/ parent-IPC l-p-cnt)
+                      (/ r-p-cnt)
+                      double)
+        split-IPC (-> (* single-cost r-cnt)
+                    (* l-cnt))]
+    split-IPC
+    ))
+
 (defn make-splits! [allocator-data min-bal-splits splits-usage
                     capacity left right]
   (let  [component->task (:component->task allocator-data)
+         lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
          comp->usage (:comp->usage allocator-data)
          task->usage (:task->usage allocator-data)
          splits (:splits allocator-data)
@@ -135,7 +154,8 @@
          s1-left (get-split-tasks splits-set first l-fn)
          s1-right (get-split-tasks splits-set first r-fn)
          s2-left (get-split-tasks splits-set second l-fn)
-         s2-right (get-split-tasks splits-set second r-fn)]
+         s2-right (get-split-tasks splits-set second r-fn)
+         split-IPC (calc-split-IPC allocator-data left right s2-left s2-right)]
     (swap! splits assoc-in [left] [(str left ".1") (str left ".2")])
     (swap! splits assoc-in [right] [(str right ".1") (str right ".2")])
 
@@ -152,10 +172,12 @@
          (fn[a](get-split-usage s1-right task->usage)))
     (swap! comp->usage update-in [(str right ".2")]
          (fn[a](get-split-usage s2-right task->usage)))
+
+    (swap! lcomp+rcomp->IPC update-in [[(str left ".2") (str right ".2")]]
+         (fn[a] split-IPC))
     
     ;Here the second split has to be reinserted to the queue
-    ;we should calc the new IPC here
-    (.offer queue [[(str left ".2") (str right ".2")] 100])
+    (.offer queue [[(str left ".2") (str right ".2")] split-IPC])
 
     (log-message "split: " left " " right)
     (log-message "@splits:" (pr-str @splits))
@@ -163,6 +185,7 @@
     (log-message " splits-set:" (pr-str splits-set))
     (log-message " component->task:" @component->task)
     (log-message " comp->usage:" @comp->usage)
+    (log-message " lcomp+rcomp->IPC:" @lcomp+rcomp->IPC)
     (log-message " queue:" queue)
 
     (fuse allocator-data (str left ".1") (str right ".1"))
@@ -187,7 +210,7 @@
       (make-splits! allocator-data min-balanced-splits splits-usage
         (@clusters destination) left right))
 
-    ; else?????????????
+    ; else????????????? (break the links)
     ))
 
 (defn split-with-fuse [allocator-data left right destination]
@@ -201,8 +224,8 @@
                    left
                    right)
         to-keep (if (@comp->usage left)
-                   right
-                   left)
+                  right
+                  left)
         to-split-tasks (@component->task to-split)
         tasks+usage (into []
                       (map (fn[t] [t (task->usage t)])
@@ -218,28 +241,31 @@
         s2 (into []
              (set/difference (set to-split-tasks) (set s1)))]
 
-    ;; what no single task can fit???
-    (swap! splits assoc-in [to-split] [(str to-split ".1") (str to-split ".2")])
-
-    (swap! component->task assoc-in [(str to-split ".1")] s1)
-    (swap! component->task assoc-in [(str to-split ".2")] s2)
-
-    (swap! comp->usage update-in [(str to-split ".1")]
-         (fn[a](get-split-usage s1 task->usage)))
-    (swap! comp->usage update-in [(str to-split ".2")]
-         (fn[a](get-split-usage s2 task->usage)))
-
-    ; under consideration
-    (.offer queue [[(str to-split ".2") nil] 0])
-
-    (fuse allocator-data to-keep (str to-split ".1"))
-
-    (log-message "split-with-fuse: " left " " right)
+    (log-message "split-with-fuse: " left " " right " cap:" capacity)
     (log-message "split-with-fuse:s1" (pr-str s1))
     (log-message "split-with-fuse:s2" (pr-str s2))
-    (log-message " component->task:" @component->task)
-    (log-message " comp->usage:" @comp->usage)
-    (log-message " queue:" queue)
+
+    ;; what no single task can fit??? - we enqueue it alone with no IPC
+    (if (= (count s1) 0)
+      (.offer queue [[to-split nil] 0]) ;it actually breaks the link
+      (do
+        (swap! splits assoc-in [to-split] [(str to-split ".1") (str to-split ".2")])
+
+        (swap! component->task assoc-in [(str to-split ".1")] s1)
+        (swap! component->task assoc-in [(str to-split ".2")] s2)
+
+        (swap! comp->usage update-in [(str to-split ".1")]
+          (fn[a](get-split-usage s1 task->usage)))
+        (swap! comp->usage update-in [(str to-split ".2")]
+          (fn[a](get-split-usage s2 task->usage)))
+        
+        (.offer queue [[(str to-split ".2") nil] 0])
+
+        (log-message " component->task:" @component->task)
+        (log-message " comp->usage:" @comp->usage)
+        (log-message " queue:" queue)
+
+        (fuse allocator-data to-keep (str to-split ".1"))))
     ))
 
 (defn fits? [allocator-data left right]
@@ -260,31 +286,53 @@
           total-usage)))
     ))
 
+(defn pending-splits [allocator-data splits]
+  (let [comp->cluster (:comp->cluster allocator-data)]
+    (reduce
+      #(if-not (contains? @comp->cluster %2)
+         (conj %1 %2) %1) []
+      splits)
+    ))
+
 (defn resolve-splits! [allocator-data left right IPC]
   (let [queue (:queue allocator-data)
         splits (:splits allocator-data)
-        comp->cluster (:comp->cluster allocator-data)
+        component->task (:component->task allocator-data)
+        lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
         
         l-splits (if (contains? @splits left)
-                   (@splits left) [])
+                   (pending-splits allocator-data (@splits left))
+                  [])
         r-splits (if (contains? @splits right)
-                   (@splits right) [])
-        pending-splits (map #(when-not
-                               (contains? @comp->cluster %) %)
-                         (concat l-splits r-splits))]
+                   (pending-splits allocator-data (@splits right))
+                  [])
+        cnt (count (concat l-splits r-splits))
+        new-left (if (> (count l-splits) 0)
+                   (first l-splits)
+                   left)
+        new-right (if (> (count r-splits) 0)
+                   (first r-splits)
+                   right)
+        new-IPC (calc-split-IPC allocator-data left right 
+                  (@component->task new-left) (@component->task new-right))]
 
-    (when (or (> (count pending-splits) 2)
-            (< (count pending-splits) 1))
+    (when-not (or (= cnt 2) (= cnt 1))
       (throw (RuntimeException.
-               "Cannot resolve splits: " (pr-str l-splits) " " (pr-str r-splits))))
+               (str "Cannot resolve splits: "
+                 (pr-str l-splits) " " (pr-str r-splits)))))
+    
+    (.offer queue [[new-left new-right] new-IPC])
 
-    true))
+    (swap! lcomp+rcomp->IPC update-in
+      [[new-left new-right]] (fn[a] new-IPC))
+    
+    (log-message "resolving splits:" l-splits " " r-splits
+      " " (pr-str queue) " " (pr-str lcomp+rcomp->IPC))
+    ))
 
-(defn is-splitted? [allocator-data left right IPC]
+(defn is-splitted? [allocator-data left right]
   (let [splits (:splits allocator-data)]
-    (if (or (@splits left)(@splits right))
-      (resolve-splits! allocator-data left right IPC)
-      false)
+    (or (@splits left)(@splits right))
     ))
 
 (defn allocate-vertex-pair [allocator-data [[left right] IPC]]
@@ -293,13 +341,13 @@
         destination (cond
                       (contains? @comp->cluster left) (@comp->cluster left)
                       (contains? @comp->cluster right) (@comp->cluster right)
-                      :else (first (find-max-space clusters)))
+                      :else (first (find-max-space clusters))) ; linear search
         fused? (or (contains? @comp->cluster left)
                  (contains? @comp->cluster right))]
     ; first think check if any vertex is splited!
-    (when-not (is-splitted? allocator-data left right IPC)
-      ; if both nodes are already fused we are finished from here
-      (when-not (and (contains? @comp->cluster left)
+    (if (is-splitted? allocator-data left right)
+      (resolve-splits! allocator-data left right IPC)
+      (when-not (and (contains? @comp->cluster left) ; if both nodes are already fused we are finished from here
                   (contains? @comp->cluster right))
         (if (fits? allocator-data left right)
           (fuse allocator-data left right)
@@ -331,7 +379,7 @@
                              {(task->component task) usage})
                         task->usage)))
      :ltask+rtask->IPC ltask+rtask->IPC
-     :lcomp+rcomp->IPC lcomp+rcomp->IPC
+     :lcomp+rcomp->IPC (atom lcomp+rcomp->IPC)
      :unlinked-tasks (set/difference
                        (set (keys task->component))
                        (set (apply concat (keys ltask+rtask->IPC))))
@@ -341,8 +389,7 @@
                 1)
               (reify Comparator
                 (compare [this [k1 v1] [k2 v2]]
-                  (- v2 v1)
-                  )
+                  (- v2 v1))
                 (equals [this obj]
                   true
                   )))
@@ -359,13 +406,13 @@
                          supervisor-ids->task-usage)
         queue (:queue allocator-data)
         clusters (:clusters allocator-data)
+        lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
         available-nodes (:available-nodes allocator-data)
         load-constraint (:load-constraint allocator-data)
         node-capacity (:node-capacity allocator-data)]
 
-    ;(map #((.offer queue %) (pr-str %)) lcomp+rcomp->IPC)
     (doall (map #(.offer queue %)
-             (:lcomp+rcomp->IPC allocator-data))) ;nlogn (log(n!))
+             @lcomp+rcomp->IPC)) ;nlogn (log(n!))
 
     (doall (map
       #(swap! clusters update-in [%]
@@ -374,15 +421,6 @@
     
     (log-message "queue:" (pr-str queue))
     (log-message "clusters:" (pr-str clusters))
-    
-    (while (.peek queue)
-      (allocate-vertex-pair allocator-data
-        (.poll queue)))
-
-    ;(swap! a update-in ["1"] conj 22)
-    ;(swap! a update-in ["1"] (partial remove #(= 33 %)))
-    ;(swap! a assoc-in ["1"] 33)
-    
     (log-message "task->component:" (pr-str (:task->component allocator-data)))
     (log-message "component->task:" (pr-str @(:component->task allocator-data)))
     (log-message "task->usage:" (pr-str (:task->usage allocator-data)))
@@ -390,5 +428,13 @@
     (log-message "ltask+rtask->IPC:" (pr-str (:ltask+rtask->IPC allocator-data)))
     (log-message "lcomp+rcomp->IPC:" (pr-str (:lcomp+rcomp->IPC allocator-data)))
     (log-message "unlinked-tasks:" (pr-str (:unlinked-tasks allocator-data)))
+
+    (while (.peek queue)
+      (allocate-vertex-pair allocator-data
+        (.poll queue)))
+
+    ;(swap! a update-in ["1"] conj 22)
+    ;(swap! a update-in ["1"] (partial remove #(= 33 %)))
+    ;(swap! a assoc-in ["1"] 33)
     ))
 
