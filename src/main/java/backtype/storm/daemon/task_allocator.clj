@@ -3,7 +3,7 @@
 ;       avoiding reinserting duplicate vertices
 ; TODO: Handling the reduced IPC after the splitting problem
 
-(ns backtype.storm.daemon.optimiser
+(ns backtype.storm.daemon.task_allocator
  (:use [backtype.storm bootstrap])
  (:import [java.util PriorityQueue Comparator]))
 

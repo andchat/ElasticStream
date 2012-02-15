@@ -6,7 +6,7 @@
   (:import [java.nio ByteBuffer])
   (:import [java.nio.channels Channels WritableByteChannel])
   (:use [backtype.storm bootstrap])
-  (:use [backtype.storm.daemon common optimiser])
+  (:use [backtype.storm.daemon common task_allocator])
   (:use [clojure.contrib.def :only [defnk]])
   (:gen-class))
 
