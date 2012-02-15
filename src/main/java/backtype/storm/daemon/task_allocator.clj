@@ -130,15 +130,41 @@
     split-IPC
     ))
 
+(defn best-split? [allocator-data left right destination s1-left s1-right]
+  (let [best-split-enabled? (:best-split-enabled? allocator-data)
+        split-candidates (:split-candidates allocator-data)
+        info (@split-candidates [left right])
+        queue (:queue allocator-data)
+        cluster->cap (:cluster->cap allocator-data)
+        capacity (@cluster->cap destination)
+        split-IPC (calc-split-IPC allocator-data left right s1-left s1-right)]
+    (if best-split-enabled?
+      (if (and (contains? @split-candidates [left right])
+            (= capacity (second info)))
+        true
+        (do
+          (swap! split-candidates assoc-in [[left right]]
+            [destination capacity])
+          (.offer queue [[left right] split-IPC])
+          (log-message "best split: " left " " right)
+          (log-message "best split: " @split-candidates)
+          (log-message "best split: " (pr-str s1-left) " " (pr-str s1-right))
+          (log-message "best split: " queue)
+          false))
+      true)
+    ))
+
 (defn make-splits! [allocator-data min-bal-splits splits-usage
-                    capacity left right]
+                    destination left right]
   (let  [component->task (:component->task allocator-data)
          lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
          comp->usage (:comp->usage allocator-data)
          task->usage (:task->usage allocator-data)
          splits (:splits allocator-data)
          queue (:queue allocator-data)
+         cluster->cap (:cluster->cap allocator-data)
 
+         capacity (@cluster->cap destination)
          usage-sum (atom 0)
          ; this should be redeveloped with reduce
          splits-set(apply merge-with merge
@@ -160,39 +186,40 @@
          s2-left (get-split-tasks splits-set 2 l-fn)
          s2-right (get-split-tasks splits-set 2 r-fn)
          split-IPC (calc-split-IPC allocator-data left right s2-left s2-right)]
-    (swap! splits assoc-in [left] [(str left ".1") (str left ".2")])
-    (swap! splits assoc-in [right] [(str right ".1") (str right ".2")])
+    (when (best-split? allocator-data left right destination s1-left s1-right)
+      (swap! splits assoc-in [left] [(str left ".1") (str left ".2")])
+      (swap! splits assoc-in [right] [(str right ".1") (str right ".2")])
 
-    (swap! component->task assoc-in [(str left ".1")] s1-left)
-    (swap! component->task assoc-in [(str left ".2")] s2-left)
-    (swap! component->task assoc-in [(str right ".1")] s1-right)
-    (swap! component->task assoc-in [(str right ".2")] s2-right)
+      (swap! component->task assoc-in [(str left ".1")] s1-left)
+      (swap! component->task assoc-in [(str left ".2")] s2-left)
+      (swap! component->task assoc-in [(str right ".1")] s1-right)
+      (swap! component->task assoc-in [(str right ".2")] s2-right)
 
-    (swap! comp->usage update-in [(str left ".1")]
-         (fn[a](get-split-usage s1-left task->usage)))
-    (swap! comp->usage update-in [(str left ".2")]
-         (fn[a](get-split-usage s2-left task->usage)))
-    (swap! comp->usage update-in [(str right ".1")]
-         (fn[a](get-split-usage s1-right task->usage)))
-    (swap! comp->usage update-in [(str right ".2")]
-         (fn[a](get-split-usage s2-right task->usage)))
+      (swap! comp->usage update-in [(str left ".1")]
+        (fn[a](get-split-usage s1-left task->usage)))
+      (swap! comp->usage update-in [(str left ".2")]
+        (fn[a](get-split-usage s2-left task->usage)))
+      (swap! comp->usage update-in [(str right ".1")]
+        (fn[a](get-split-usage s1-right task->usage)))
+      (swap! comp->usage update-in [(str right ".2")]
+        (fn[a](get-split-usage s2-right task->usage)))
 
-    (swap! lcomp+rcomp->IPC update-in [[(str left ".2") (str right ".2")]]
-         (fn[a] split-IPC))
-    
-    ;Here the second split has to be reinserted to the queue
-    (.offer queue [[(str left ".2") (str right ".2")] split-IPC])
+      (swap! lcomp+rcomp->IPC update-in [[(str left ".2") (str right ".2")]]
+        (fn[a] split-IPC))
 
-    (log-message "split: " left " " right)
-    (log-message "@splits:" (pr-str @splits))
-    (log-message " min-bal-splits:" (pr-str min-bal-splits))
-    (log-message " splits-set:" (pr-str splits-set))
-    (log-message " component->task:" @component->task)
-    (log-message " comp->usage:" @comp->usage)
-    (log-message " lcomp+rcomp->IPC:" @lcomp+rcomp->IPC)
-    (log-message " queue:" queue)
+      ;Here the second split has to be reinserted to the queue
+      (.offer queue [[(str left ".2") (str right ".2")] split-IPC])
 
-    (fuse allocator-data (str left ".1") (str right ".1"))
+      (log-message "split: " left " " right)
+      (log-message "@splits:" (pr-str @splits))
+      (log-message " min-bal-splits:" (pr-str min-bal-splits))
+      (log-message " splits-set:" (pr-str splits-set))
+      (log-message " component->task:" @component->task)
+      (log-message " comp->usage:" @comp->usage)
+      (log-message " lcomp+rcomp->IPC:" @lcomp+rcomp->IPC)
+      (log-message " queue:" queue)
+
+      (fuse allocator-data (str left ".1") (str right ".1")))
     ))
 
 (defn split-no-fuse [allocator-data left right destination]
@@ -213,7 +240,7 @@
         ;(log-message " destination" destination)
     (if (<= (min-split-usage splits-usage) (@cluster->cap destination))
       (make-splits! allocator-data min-balanced-splits splits-usage
-        (@cluster->cap destination) left right)
+        destination left right)
       (do ; else break the links
         (.offer queue [[left nil] 0])
         (.offer queue [[right nil] 0])
@@ -235,6 +262,7 @@
         to-split (if (@comp->cluster left)
                   right
                   left)
+        to-keep-tasks (@component->task to-keep)
         to-split-tasks (@component->task to-split)
         tasks+usage (into []
                       (map (fn[t] [t (task->usage t)])
@@ -259,7 +287,7 @@
       (do
         (.offer queue [[to-split nil] 0]) ;it actually breaks the link
         (log-message " queue:" queue))
-      (do
+      (when (best-split? allocator-data left right destination to-keep-tasks s1)
         (swap! splits assoc-in [to-split] [(str to-split ".1") (str to-split ".2")])
 
         (swap! component->task assoc-in [(str to-split ".1")] s1)
@@ -313,32 +341,36 @@
         
         l-splits (if (contains? @splits left)
                    (pending-splits allocator-data (@splits left))
-                  [])
+                   [])
         r-splits (if (contains? @splits right)
                    (pending-splits allocator-data (@splits right))
-                  [])
+                   [])
         cnt (count (concat l-splits r-splits))
         new-left (if (> (count l-splits) 0)
                    (first l-splits)
                    left)
         new-right (if (> (count r-splits) 0)
-                   (first r-splits)
-                   right)
-        new-IPC (calc-split-IPC allocator-data left right 
-                  (@component->task new-left) (@component->task new-right))]
+                    (first r-splits)
+                    right)
+        new-IPC (if-not (= IPC 0)
+                  (calc-split-IPC allocator-data left right
+                    (@component->task new-left) (@component->task new-right))
+                  0)
+        pending-vertices? (> cnt 0)]
 
-    (when-not (or (= cnt 2) (= cnt 1))
+    (when (> cnt 2) 
       (throw (RuntimeException.
-               (str "Cannot resolve splits: "
+               (str "Cannot resolve splits: " left " " right " "
                  (pr-str l-splits) " " (pr-str r-splits)))))
-    
-    (.offer queue [[new-left new-right] new-IPC])
 
-    (swap! lcomp+rcomp->IPC update-in
-      [[new-left new-right]] (fn[a] new-IPC))
-    
-    (log-message "resolving splits:" l-splits " " r-splits
-      " " (pr-str queue) " " (pr-str lcomp+rcomp->IPC))
+    (when pending-vertices?
+      (.offer queue [[new-left new-right] new-IPC])
+      
+      (swap! lcomp+rcomp->IPC update-in
+        [[new-left new-right]] (fn[a] new-IPC))
+
+      (log-message "resolving splits:" l-splits " " r-splits
+        " " (pr-str queue) " " (pr-str lcomp+rcomp->IPC)))
     ))
 
 (defn is-splitted? [allocator-data left right]
@@ -467,7 +499,9 @@
      :comp->cluster (atom {})
      :unassigned (atom [])
      :cluster->tasks (atom {})
-     :load-constraint 0.5
+     :split-candidates (atom {})
+     :best-split-enabled? true
+     :load-constraint 0.35
      :node-capacity 100 
      :available-nodes 4
      }))
