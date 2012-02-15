@@ -8,7 +8,7 @@
  (:import [java.util PriorityQueue Comparator]))
 
 (bootstrap)
-
+ 
 (defn get-task->component [storm-cluster-state]
   (let [storm->tasks (apply merge
                        (map (fn[id] {id (.task-ids storm-cluster-state id)})
