@@ -2,6 +2,7 @@
 ; TODO: When breaking links we should have a datastructure for
 ;       avoiding reinserting duplicate vertices
 ; TODO: Handling the reduced IPC after the splitting problem
+; Assumption 1 No state to mitigate
 
 (ns backtype.storm.daemon.task_allocator
  (:use [backtype.storm bootstrap])
@@ -227,25 +228,30 @@
         component->task (:component->task allocator-data)
         task->usage (:task->usage allocator-data)
         cluster->cap (:cluster->cap allocator-data)
+        broken-links (:broken-links allocator-data)
         left-tasks (@component->task left)
         right-tasks (@component->task right)
         min-balanced-splits (calc-min-balanced-splits
                               left-tasks right-tasks)
         splits-usage (get-splits-usage
                        min-balanced-splits task->usage)]
-        ;split-size (get-split-size
-        ;             (first min-balanced-splits)
-        ;             component->usage left right
-        ;             (+ (count left-tasks)(count right-tasks)))]
-        ;(log-message " destination" destination)
+    ;split-size (get-split-size
+    ;             (first min-balanced-splits)
+    ;             component->usage left right
+    ;             (+ (count left-tasks)(count right-tasks)))]
+    ;(log-message " destination" destination)
     (if (<= (min-split-usage splits-usage) (@cluster->cap destination))
       (make-splits! allocator-data min-balanced-splits splits-usage
         destination left right)
       (do ; else break the links
-        (.offer queue [[left nil] 0])
-        (.offer queue [[right nil] 0])
+        (when-not (contains? @broken-links left)
+          (.offer queue [[left nil] 0])
+          (swap! broken-links conj left))
+        (when-not (contains? @broken-links right)
+          (.offer queue [[right nil] 0])
+          (swap! broken-links conj right))
         (log-message " Breaking links: " left " " right " queue:" queue)
-      ))
+        ))
     ))
 
 (defn split-with-fuse [allocator-data left right destination]
@@ -256,6 +262,7 @@
         comp->usage (:comp->usage allocator-data)
         comp->cluster (:comp->cluster allocator-data)
         task->usage (:task->usage allocator-data)
+        broken-links (:broken-links allocator-data)       
         to-keep (if (@comp->cluster left)
                    left
                    right)
@@ -284,8 +291,9 @@
 
     ;; what no single task can fit??? - we enqueue it alone with no IPC
     (if (= (count s1) 0)
-      (do
+      (when-not (contains? @broken-links to-split)
         (.offer queue [[to-split nil] 0]) ;it actually breaks the link
+        (swap! broken-links conj to-split)
         (log-message " queue:" queue))
       (when (best-split? allocator-data left right destination to-keep-tasks s1)
         (swap! splits assoc-in [to-split] [(str to-split ".1") (str to-split ".2")])
@@ -500,8 +508,9 @@
      :unassigned (atom [])
      :cluster->tasks (atom {})
      :split-candidates (atom {})
+     :broken-links (atom #{})
      :best-split-enabled? true
-     :load-constraint 0.35
+     :load-constraint 0.6
      :node-capacity 100 
      :available-nodes 4
      }))
