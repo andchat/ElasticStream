@@ -6,10 +6,11 @@
 
 (ns backtype.storm.daemon.task_allocator
  (:use [backtype.storm bootstrap])
- (:import [java.util PriorityQueue Comparator]))
+ (:import [java.util PriorityQueue LinkedList Comparator]))
 
 (bootstrap)
- 
+
+; linear but slow because it connects to zookeeper (one call for each task)
 (defn get-task->component [storm-cluster-state]
   (let [storm->tasks (apply merge
                        (map (fn[id] {id (.task-ids storm-cluster-state id)})
@@ -21,6 +22,7 @@
       )
     ))
 
+; linear
 (defn get-lcomp+rcomp->IPC [task->component ltask+rtask->IPC]
   (apply merge-with +
     (map (fn[[left right]]
@@ -36,30 +38,21 @@
   (second 
     (apply min-key (fn [[k v]] v) splits)))
 
-(defn fuse [allocator-data left right]
+; constant
+(defn fuse [allocator-data destination left right]
   (let [comp->cluster (:comp->cluster allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         comp->usage (:comp->usage allocator-data)
-        left-cluster (@comp->cluster left)
-        right-cluster (@comp->cluster right)]
+
+        l-cluster (@comp->cluster left)
+        r-cluster (@comp->cluster right)
+        l-usage (if l-cluster 0 (@comp->usage left))
+        r-usage (if r-cluster 0 (@comp->usage right))
+        total-usage (+ l-usage r-usage)]
     
-    (when left-cluster
-      (swap! comp->cluster assoc-in [right] left-cluster)
-      (swap! cluster->cap update-in [left-cluster] #(- % (@comp->usage right))))
-
-    (when right-cluster
-      (swap! comp->cluster assoc-in [left] right-cluster)
-      (swap! cluster->cap update-in [right-cluster] #(- % (@comp->usage left))))
-
-    (when-not (or left-cluster right-cluster)
-      (let [node (first (find-max-space cluster->cap))
-            total-usage (+ (@comp->usage left)(@comp->usage right))]
-        
-        (swap! comp->cluster assoc-in [left] node)
-        (swap! comp->cluster assoc-in [right] node)
-        (swap! cluster->cap update-in [node]
-          #(- % total-usage))
-        ))
+    (when-not r-cluster (swap! comp->cluster assoc-in [right] destination))
+    (when-not l-cluster (swap! comp->cluster assoc-in [left] destination))
+    (swap! cluster->cap update-in [destination] #(- % total-usage))
 
     (log-message "fuse: " left " " right)
     (log-message "fuse:cluster->cap:" @cluster->cap)
@@ -77,16 +70,21 @@
 (defn vectorize [[k v]]
   (into v k))
 
-; It should be redeveloped more efficiently
+; linear
 (defn calc-min-balanced-splits [l-tasks r-tasks]
   (let [small-c (smaller-col l-tasks r-tasks)
-        large-c (larger-col l-tasks r-tasks)]
-    ;(map (fn[[k v]] (conj v k))
-      (apply merge-with into
-        (map
-          (fn[t1 t2]{[t1] [t2]})
-          (repeat-seq (count large-c) small-c) large-c))
-      ;)
+        large-c (larger-col l-tasks r-tasks)
+        queue (LinkedList.)]
+    (doall (for [t small-c] (.offer queue [[t][]]))) ;fill stack
+    (doall (for [t large-c :let [bucket (.poll queue)
+                          l (first bucket)
+                          r (second bucket)]]
+         (.offer queue [l (conj r t)])))
+    (into {} (for [b queue] b))
+    ;(apply merge-with into
+    ;  (map
+    ;    (fn[t1 t2]{[t1] [t2]})
+    ;    (repeat-seq (count large-c) small-c) large-c))
     ))
 
 ; Lets keep it simple at the moment (and fast...) and just
@@ -104,6 +102,7 @@
       (-> (get splits-set split-num)
         node-fn))))
 
+; linear to the split size
 (defn get-split-usage [min-balanced-split task->usage]
   (reduce (fn [s a1] (+ (task->usage a1) s)) 0
     min-balanced-split))
@@ -115,6 +114,7 @@
 
 ; the communications are l-tasks*r-tasks. We avoid to probe for all these
 ; those pairs and we approximate the new IPC
+; efficient (constant time) and it works pretty nice.
 (defn calc-split-IPC [allocator-data l-parent r-parent l-s-tasks r-s-tasks]
   (let [component->task (:component->task allocator-data)
         lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
@@ -155,6 +155,7 @@
       true)
     ))
 
+; linear to the number of splits + loc to insert to the queue
 (defn make-splits! [allocator-data min-bal-splits splits-usage
                     destination left right]
   (let  [component->task (:component->task allocator-data)
@@ -167,7 +168,7 @@
 
          capacity (@cluster->cap destination)
          usage-sum (atom 0)
-         ; this should be redeveloped with reduce
+         
          splits-set(apply merge-with merge
                      (for [[k v] min-bal-splits
                            :let [split-size (splits-usage k)]]
@@ -176,7 +177,7 @@
                            (swap! usage-sum (partial + split-size))
                            {1 {k v}})
                          {2 {k v}}
-                         )))
+                         ))) ; linear to the number of splits
          l-cnt (count (@component->task left))
          r-cnt (count (@component->task right))
          l-fn (if (< l-cnt r-cnt) keys vals)
@@ -220,10 +221,10 @@
       (log-message " lcomp+rcomp->IPC:" @lcomp+rcomp->IPC)
       (log-message " queue:" queue)
 
-      (fuse allocator-data (str left ".1") (str right ".1")))
+      (fuse allocator-data destination (str left ".1") (str right ".1")))
     ))
 
-(defn split-no-fuse [allocator-data left right destination]
+(defn split-both [allocator-data left right destination]
   (let [queue (:queue allocator-data)
         component->task (:component->task allocator-data)
         task->usage (:task->usage allocator-data)
@@ -231,8 +232,9 @@
         broken-links (:broken-links allocator-data)
         left-tasks (@component->task left)
         right-tasks (@component->task right)
+        ;linear to the number of tasks of the components
         min-balanced-splits (calc-min-balanced-splits
-                              left-tasks right-tasks)
+                              left-tasks right-tasks) 
         splits-usage (get-splits-usage
                        min-balanced-splits task->usage)]
     ;split-size (get-split-size
@@ -254,7 +256,10 @@
         ))
     ))
 
-(defn split-with-fuse [allocator-data left right destination]
+; linear to the tasks of the vertex to split.
+; plus logc to insert the second split back to the queue;
+; the best split func it is a different case... 
+(defn split-one [allocator-data left right destination]
   (let [cluster->cap (:cluster->cap allocator-data)
         splits (:splits allocator-data)
         queue (:queue allocator-data)
@@ -312,10 +317,10 @@
         (log-message " comp->usage:" @comp->usage)
         (log-message " queue:" queue)
 
-        (fuse allocator-data to-keep (str to-split ".1"))))
+        (fuse allocator-data destination to-keep (str to-split ".1"))))
     ))
 
-(defn fits? [allocator-data left right]
+(defn fits? [allocator-data destination left right]
   (let [comp->usage (:comp->usage allocator-data)
         total-usage (+ (@comp->usage left) (@comp->usage right))
         cluster->cap (:cluster->cap allocator-data)
@@ -324,15 +329,16 @@
     ; if one of the vertices is already fused then we must put the other vertex
     ; in the same cluster
     (if (contains? @comp->cluster left)
-      ( >= (@cluster->cap (@comp->cluster left))
+      ( >= (@cluster->cap destination)
         (@comp->usage right))
       (if (contains? @comp->cluster right)
-        ( >= (@cluster->cap (@comp->cluster right))
+        ( >= (@cluster->cap destination)
           (@comp->usage left))
-        ( >= (second (find-max-space cluster->cap))
+        ( >= (@cluster->cap destination)
           total-usage)))
     ))
 
+; constant (the splits are always 2)
 (defn pending-splits [allocator-data splits]
   (let [comp->cluster (:comp->cluster allocator-data)]
     (reduce
@@ -401,24 +407,29 @@
         destination (cond
                       (contains? @comp->cluster left) (@comp->cluster left)
                       (contains? @comp->cluster right) (@comp->cluster right)
-                      :else (first (find-max-space cluster->cap))) ; linear search
+                      :else (first (find-max-space cluster->cap))) ; S.O.S. linear search
         fused? (or (contains? @comp->cluster left)
                  (contains? @comp->cluster right))]
-    ; first think check if any vertex is splited!
-    (if (is-splitted? allocator-data left right)
-      (resolve-splits! allocator-data left right IPC)
+    ; first check if any vertex is splited!
+    (if (is-splitted? allocator-data left right) ; constant
+      (resolve-splits! allocator-data left right IPC) ;logc to insert the pair to the heap
       (if (<= IPC 0)
-        (add-to-unlinked-tasks allocator-data left)
+        (add-to-unlinked-tasks allocator-data left) ;constant
         (when-not (and (contains? @comp->cluster left) ; if both nodes are already fused we are finished from here
                     (contains? @comp->cluster right))
-          (if (fits? allocator-data left right)
-            (fuse allocator-data left right)
+          (if (fits? allocator-data destination left right) ;constant
+            (fuse allocator-data destination left right) ; constant
             (if fused?
-              (split-with-fuse allocator-data left right destination)
-              (split-no-fuse allocator-data left right destination))
+              (split-one allocator-data left right destination)
+              (split-both allocator-data left right destination))
             ))))
     ))
 
+; n = tasks, c = clusters
+; needs nlogn (for initial sort of tasks)
+; clogc to fill the cluster heap (logc! to be precise)
+; nlogc to perform the allocation
+; in the usual case where n > c it is just O(nlogn)
 (defn allocate-unlinked-tasks [allocator-data]
   (let [cluster->cap (:cluster->cap allocator-data)
         unlinked-tasks (:unlinked-tasks allocator-data)
@@ -429,7 +440,7 @@
         tasks (atom (into []
                       (sort-by second 
                         (map (fn[a] [a (task->usage a)])
-                          @unlinked-tasks))))
+                          @unlinked-tasks)))) ;nlogn
 
         cluster-queue (PriorityQueue.
                         (count @cluster->cap)
@@ -470,28 +481,28 @@
   (let [task->component (get-task->component storm-cluster-state)
         task->usage (apply merge-with +
                       (map (fn[[a1 a2]] a1)
-                        (vals supervisor-ids->task-usage)))
+                        (vals supervisor-ids->task-usage))) ; linear
         ltask+rtask->IPC (apply merge-with +
                            (map (fn[[a1 a2]] a2)
-                             (vals supervisor-ids->task-usage)))
-        lcomp+rcomp->IPC (get-lcomp+rcomp->IPC task->component ltask+rtask->IPC)]
+                             (vals supervisor-ids->task-usage))) ;linear
+        lcomp+rcomp->IPC (get-lcomp+rcomp->IPC task->component ltask+rtask->IPC)] ;linear
     {:task->component task->component
-     :component->task (atom (apply merge-with concat
+     :component->task (atom (apply merge-with into
                               (map
                                 (fn [[task component]]
                                   {component [task]})
-                                task->component)))
+                                task->component))) ; linear
      :task->usage task->usage
      :comp->usage (atom 
                     (apply merge-with +
                       (map (fn[[task usage]]
                              {(task->component task) usage})
-                        task->usage)))
+                        task->usage))) ; linear
      :ltask+rtask->IPC ltask+rtask->IPC
      :lcomp+rcomp->IPC (atom lcomp+rcomp->IPC)
      :unlinked-tasks (atom (set/difference
                        (set (keys task->component))
-                       (set (apply concat (keys ltask+rtask->IPC)))))
+                       (set (apply concat (keys ltask+rtask->IPC))))) ;linear
      :queue (PriorityQueue.
               (if (> (count lcomp+rcomp->IPC) 0)
                 (count lcomp+rcomp->IPC)
@@ -532,7 +543,7 @@
       (doall (map
                #(swap! cluster->cap update-in [%]
                   (fn[a] (* node-capacity load-constraint)))
-               (range available-nodes)))
+               (range available-nodes))) ; linear
 
       (log-message "Starting allocation...")
       (log-message "queue:" (pr-str queue))
