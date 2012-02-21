@@ -1,12 +1,13 @@
 ; TODO: fuse triange problem?
 ; TODO: When breaking links we should have a datastructure for
-;       avoiding reinserting duplicate vertices
-; TODO: Handling the reduced IPC after the splitting problem
+;       avoiding reinserting duplicate vertices - OK
+; TODO: Handling the reduced IPC after the splitting problem - OK
 ; Assumption 1 No state to mitigate
 
 (ns backtype.storm.daemon.task_allocator
  (:use [backtype.storm bootstrap])
- (:import [java.util PriorityQueue LinkedList Comparator]))
+ (:import [java.util PriorityQueue LinkedList Comparator])
+ (:import [backtype.storm.utils Treap]))
 
 (bootstrap)
 
@@ -19,8 +20,7 @@
       (for [storm-id (keys storm->tasks)
             task-id (storm->tasks storm-id)]
         {task-id (-> (.task-info storm-cluster-state storm-id task-id) :component-id)})
-      )
-    ))
+      )))
 
 ; linear
 (defn get-lcomp+rcomp->IPC [task->component ltask+rtask->IPC]
@@ -31,8 +31,8 @@
       (keys ltask+rtask->IPC))))
 
 ; linear search... (has to be improved)
-(defn find-max-space [cluster->cap]
-    (apply max-key (fn [[k v]] v) @cluster->cap))
+;(defn find-max-space [cluster->cap]
+;    (apply max-key (fn [[k v]] v) @cluster->cap))
 
 (defn min-split-usage [splits]
   (second 
@@ -43,6 +43,7 @@
   (let [comp->cluster (:comp->cluster allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         comp->usage (:comp->usage allocator-data)
+        capacity (.find cluster->cap destination)
 
         l-cluster (@comp->cluster left)
         r-cluster (@comp->cluster right)
@@ -52,10 +53,13 @@
     
     (when-not r-cluster (swap! comp->cluster assoc-in [right] destination))
     (when-not l-cluster (swap! comp->cluster assoc-in [left] destination))
-    (swap! cluster->cap update-in [destination] #(- % total-usage))
+    ;(.updatePriority cluster->cap destination (- capacity total-usage))
+    (.remove cluster->cap destination)
+    (.insert cluster->cap destination (- capacity total-usage))
+    ;(swap! cluster->cap update-in [destination] #(- % total-usage))
 
     (log-message "fuse: " left " " right)
-    (log-message "fuse:cluster->cap:" @cluster->cap)
+    (log-message "fuse:cluster->cap:" (.toTree cluster->cap))
     (log-message "fuse:comp->cluster:" @comp->cluster)
     ))
 
@@ -137,7 +141,7 @@
         info (@split-candidates [left right])
         queue (:queue allocator-data)
         cluster->cap (:cluster->cap allocator-data)
-        capacity (@cluster->cap destination)
+        capacity (.find cluster->cap destination)
         split-IPC (calc-split-IPC allocator-data left right s1-left s1-right)]
     (if best-split-enabled?
       (if (and (contains? @split-candidates [left right])
@@ -166,7 +170,7 @@
          queue (:queue allocator-data)
          cluster->cap (:cluster->cap allocator-data)
 
-         capacity (@cluster->cap destination)
+         capacity (.find cluster->cap destination)
          usage-sum (atom 0)
          
          splits-set(apply merge-with merge
@@ -242,7 +246,7 @@
     ;             component->usage left right
     ;             (+ (count left-tasks)(count right-tasks)))]
     ;(log-message " destination" destination)
-    (if (<= (min-split-usage splits-usage) (@cluster->cap destination))
+    (if (<= (min-split-usage splits-usage) (.find cluster->cap destination))
       (make-splits! allocator-data min-balanced-splits splits-usage
         destination left right)
       (do ; else break the links
@@ -279,7 +283,7 @@
         tasks+usage (into []
                       (map (fn[t] [t (task->usage t)])
                         to-split-tasks))
-        capacity (@cluster->cap destination)
+        capacity (.find cluster->cap destination)
 
         s1 (first
              (reduce (fn [[k1 v1] [k2 v2]]
@@ -324,18 +328,15 @@
   (let [comp->usage (:comp->usage allocator-data)
         total-usage (+ (@comp->usage left) (@comp->usage right))
         cluster->cap (:cluster->cap allocator-data)
+        capacity (.find cluster->cap destination)
         comp->cluster (:comp->cluster allocator-data)]
-
     ; if one of the vertices is already fused then we must put the other vertex
     ; in the same cluster
     (if (contains? @comp->cluster left)
-      ( >= (@cluster->cap destination)
-        (@comp->usage right))
+      ( >= capacity (@comp->usage right))
       (if (contains? @comp->cluster right)
-        ( >= (@cluster->cap destination)
-          (@comp->usage left))
-        ( >= (@cluster->cap destination)
-          total-usage)))
+        ( >= capacity (@comp->usage left))
+        ( >= capacity total-usage)))
     ))
 
 ; constant (the splits are always 2)
@@ -407,7 +408,7 @@
         destination (cond
                       (contains? @comp->cluster left) (@comp->cluster left)
                       (contains? @comp->cluster right) (@comp->cluster right)
-                      :else (first (find-max-space cluster->cap))) ; S.O.S. linear search
+                      :else (.top cluster->cap))
         fused? (or (contains? @comp->cluster left)
                  (contains? @comp->cluster right))]
     ; first check if any vertex is splited!
@@ -442,37 +443,38 @@
                         (map (fn[a] [a (task->usage a)])
                           @unlinked-tasks)))) ;nlogn
 
-        cluster-queue (PriorityQueue.
-                        (count @cluster->cap)
-                        (reify Comparator
-                          (compare [this [k1 v1] [k2 v2]]
-                            (- v2 v1))
-                          (equals [this obj]
-                            true
-                            )))
+        ;cluster-queue (PriorityQueue.
+        ;                (count @cluster->cap)
+        ;                (reify Comparator
+        ;                  (compare [this [k1 v1] [k2 v2]]
+        ;                    (- v2 v1))
+        ;                  (equals [this obj]
+        ;                    true
+        ;                    )))
 
         dec-cap-fn (fn [[k cap] amt] [k (- cap amt)])]
     
     (log-message "allocating unlinked tasks...")
-    (doall (map #(.offer cluster-queue %) @cluster->cap))
+    ;(doall (map #(.offer cluster-queue %) @cluster->cap))
 
     (while (peek @tasks)
       (let [t (peek @tasks)
             t-key (first t)
             t-usage (second t)
-            c (.peek cluster-queue)
-            c-key (first c)
-            c-usage (second c)]
+            c-key (.top cluster->cap)
+            c-usage (.find cluster->cap c-key)]
         (swap! tasks pop)
         (if (<= t-usage c-usage)
           (do
-            (.poll cluster-queue)
+            ;(.poll cluster-queue)
             (swap! cluster->tasks update-in [c-key] into [t-key])
-            (.offer cluster-queue (dec-cap-fn c t-usage)))
+            (.remove cluster->cap c-key)
+            (.insert cluster->cap c-key (- c-usage t-usage)))
+            ;(.updatePriority cluster->cap c-key (- c-usage t-usage)))
           (swap! unassigned conj t-key))
         ))
 
-    (log-message "cluster queue:" cluster-queue)
+    (log-message "cluster queue:" (.toTree cluster->cap))
     (log-message "cluster tasks:" @cluster->tasks)
     (log-message "unassigned:" @unassigned)
     ))
@@ -513,15 +515,15 @@
                 (equals [this obj]
                   true
                   )))
+     :cluster->cap (Treap.)
      :splits (atom {})
-     :cluster->cap (atom {})
      :comp->cluster (atom {})
      :unassigned (atom [])
      :cluster->tasks (atom {})
      :split-candidates (atom {})
      :broken-links (atom #{})
      :best-split-enabled? true
-     :load-constraint 0.6
+     :load-constraint 0.35
      :node-capacity 100 
      :available-nodes 4
      }))
@@ -540,14 +542,19 @@
       (doall (map #(.offer queue %)
                @lcomp+rcomp->IPC)) ;nlogn (to be precise log(n!))
 
+      ;(doall (map
+      ;         #(swap! cluster->cap update-in [%]
+      ;            (fn[a] (* node-capacity load-constraint)))
+      ;         (range available-nodes))) ; linear
+
       (doall (map
-               #(swap! cluster->cap update-in [%]
-                  (fn[a] (* node-capacity load-constraint)))
+               #(.insert cluster->cap %
+                  (* node-capacity load-constraint))
                (range available-nodes))) ; linear
 
       (log-message "Starting allocation...")
       (log-message "queue:" (pr-str queue))
-      (log-message "cluster->cap:" (pr-str cluster->cap))
+      (log-message "cluster->cap:" (.toTree cluster->cap))
       (log-message "task->component:" (pr-str (:task->component allocator-data)))
       (log-message "component->task:" (pr-str @(:component->task allocator-data)))
       (log-message "task->usage:" (pr-str (:task->usage allocator-data)))

@@ -29,3 +29,12 @@
 (doall (map #(.offer cluster-queue %) @clusters))
 (def unassigned (atom []))
 (def cluster->tasks (atom {}))
+
+(import backtype.storm.utils.Treap)
+(def treap (Treap.))
+(.insert treap 1 70)
+(.insert treap 2 60)
+(.insert treap 3 50)
+(.insert treap 4 40)
+(.top treap)
+(.poll treap)

@@ -45,7 +45,7 @@ class TreapNode <K extends Comparable<? super K>,
 
     public int comparePriorities(P p)
     {
-        return priority.compareTo(p);
+       return priority.compareTo(p);
     }
 
     public String toString()
@@ -231,13 +231,14 @@ class TreapNode <K extends Comparable<? super K>,
      private String toTree(TreapNode<K, P> rt, int level)
      {
 	 StringBuffer sb = new StringBuffer();
-	 for (int i = 0; i < level; i++) sb.append(" ");
+	 //for (int i = 0; i < level; i++) sb.append(" ");
 	 if (rt != null) {
-	     sb.append(rt + "\n");
+	     //sb.append(rt + "\n");
+             sb.append(rt);
 	     sb.append(toTree(rt.left, level+1));
 	     sb.append(toTree(rt.right, level+1));
 	 }
-	 else sb.append("XXX\n");
+	 //else sb.append("XXX\n");
 	 return sb.toString();
      }
 
@@ -270,38 +271,4 @@ class TreapNode <K extends Comparable<? super K>,
 	     toDot(rt.right, ps);
 	 }
      }
-/*
-     public static void main(String [] args)
-     {
-	 int limit = Integer.parseInt(args[0]);
-	 Treap<Integer, Integer> treap = new Treap<Integer, Integer>();
-
-	 for (int i = 0; i < limit; i++) {
-	     System.out.println("Inserting " + (i*10));
-	     treap.insert(i*10, limit-i);
-	 }
-	 System.out.println(treap.toTree());
-	 treap.remove(2*limit);
-	 System.out.println(treap.toTree());
-	 treap.remove(3*limit);
-	 System.out.println(treap.toTree());
-
-	 for (int i = 0; i < limit; i++) {
-	     System.out.println("Looking up " + (i*10));
-	     Integer f = treap.find(i*10);
-	     System.out.println(f);
-	 }
-
-	 treap.updatePriority(5*limit, 1000);
-	 System.out.println(treap.toTree());
-
-	 for (int i = 0; i < limit; i++) {
-	     System.out.println("Removing " + (i*10));
-	     treap.remove(i*10);
-        }
-
-        System.out.println(treap.toTree());
-    }
- * 
- */
 }
