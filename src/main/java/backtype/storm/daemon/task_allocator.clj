@@ -432,19 +432,9 @@
                         (map (fn[a] [a (task->usage a)])
                           @unlinked-tasks)))) ;nlogn
 
-        ;cluster-queue (PriorityQueue.
-        ;                (count @cluster->cap)
-        ;                (reify Comparator
-        ;                  (compare [this [k1 v1] [k2 v2]]
-        ;                    (- v2 v1))
-        ;                  (equals [this obj]
-        ;                    true
-        ;                    )))
-
         dec-cap-fn (fn [[k cap] amt] [k (- cap amt)])]
     
     (log-message "allocating unlinked tasks...")
-    ;(doall (map #(.offer cluster-queue %) @cluster->cap))
 
     (while (peek @tasks)
       (let [t (peek @tasks)
@@ -455,11 +445,9 @@
         (swap! tasks pop)
         (if (<= t-usage c-usage)
           (do
-            ;(.poll cluster-queue)
             (swap! cluster->tasks update-in [c-key] into [t-key])
             (.remove cluster->cap c-key)
             (.insert cluster->cap c-key (- c-usage t-usage)))
-            ;(.updatePriority cluster->cap c-key (- c-usage t-usage)))
           (swap! unassigned conj t-key))
         ))
 
@@ -506,7 +494,7 @@
      :split-candidates (atom {})
      :broken-links (atom #{})
      :best-split-enabled? true
-     :load-constraint 0.35
+     :load-constraint 0.5
      :node-capacity 100 
      :available-nodes 4
      }))
@@ -528,7 +516,10 @@
         queue (:queue allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
-        task->usage (:task->usage allocator-data)]
+        task->usage (:task->usage allocator-data)
+        comp->cluster (:comp->cluster allocator-data)
+        cluster->tasks (:cluster->tasks allocator-data)
+        component->task (:component->task allocator-data)]
     (when (> (count task->usage) 0)
       (doall (map #(.offer queue %)
                @lcomp+rcomp->IPC)) ;nlogn (to be precise log(n!))
@@ -556,7 +547,12 @@
       (log-message "unlinked-tasks:" (pr-str (:unlinked-tasks allocator-data)))
 
       ; Handle unlinked-tasks
-      (allocate-unlinked-tasks allocator-data))
+      (allocate-unlinked-tasks allocator-data)
+
+      (merge-with into
+        (apply merge-with into
+          (map (fn [[k v]] {v (@component->task k)}) @comp->cluster))
+        @cluster->tasks))
     ))
 
 (defn update-destination! [allocator-data last-comp-pair destination left right]
@@ -624,6 +620,8 @@
         cluster->cap (:cluster->cap allocator-data)
         ltask+rtask->IPC (:ltask+rtask->IPC allocator-data)
         task->usage (:task->usage allocator-data)
+        comp->cluster (:comp->cluster allocator-data)
+        cluster->tasks (:cluster->tasks allocator-data)
         destination (atom -1)
         last-comp-pair (atom [])]
     (when (> (count task->usage) 0)
@@ -653,7 +651,41 @@
       (log-message "unlinked-tasks:" (pr-str (:unlinked-tasks allocator-data)))
 
       ; Handle unlinked-tasks
-      (allocate-unlinked-tasks allocator-data))
+      (allocate-unlinked-tasks allocator-data)
+
+      (merge-with into
+        (apply merge-with into
+          (map (fn [[k v]] {v [k]}) @comp->cluster))
+        @cluster->tasks))
+    ))
+
+(defn get-ipc-sum [tasks ltask+rtask->IPC]
+  (reduce +
+    (for [t1 tasks t2 tasks
+          :let [ipc(ltask+rtask->IPC [t1 t2])]]
+      (if ipc ipc 0))))
+
+(defn evaluate-alloc [alloc ltask+rtask->IPC]
+  (reduce +   
+    (map #(get-ipc-sum % ltask+rtask->IPC)
+      (vals alloc))))
+
+
+(defn combinations [tasks clusters alloc]
+  (if (> (count tasks) 0)
+    (apply concat
+      (for [c clusters]
+        (combinations (pop tasks) clusters
+          (merge-with into alloc {c [(peek tasks)]}))))
+    [alloc]))
+
+
+(defn exhaustive-alloc [task->component task->usage ltask+rtask->IPC]
+  (let [allocator-data (mk-allocator-data task->component
+                         task->usage ltask+rtask->IPC)
+        tasks (keys task->usage)]
+    (setup-clusters allocator-data)
+
     ))
 
 (defn allocate-tasks [storm-cluster-state supervisor-ids->task-usage]
@@ -663,8 +695,19 @@
                         (vals supervisor-ids->task-usage))) ; linear
         ltask+rtask->IPC (apply merge-with +
                            (map (fn[[a1 a2]] a2)
-                             (vals supervisor-ids->task-usage)))] ;linear
-    (allocator-alg1 task->component task->usage ltask+rtask->IPC)
-    (allocator-alg2 task->component task->usage ltask+rtask->IPC)
+                             (vals supervisor-ids->task-usage)));linear
+        
+        alloc-1 (allocator-alg1 task->component
+               task->usage ltask+rtask->IPC)
+        alloc-2 (allocator-alg2 task->component
+               task->usage ltask+rtask->IPC)]
 
+    (log-message "Total IPC:" (reduce + (vals ltask+rtask->IPC)))
+    (log-message "Allocation 1:" (pr-str alloc-1))
+    (log-message "Allocation 1 IPC gain:"
+      (evaluate-alloc alloc-1 ltask+rtask->IPC))
+
+    (log-message "Allocation 2:" (pr-str alloc-2))
+    (log-message "Allocation 2 IPC gain:"
+      (evaluate-alloc alloc-2 ltask+rtask->IPC))
     ))
