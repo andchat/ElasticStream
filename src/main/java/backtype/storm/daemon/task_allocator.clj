@@ -539,7 +539,7 @@
      :split-candidates (atom {})
      :broken-links (atom #{})
      :best-split-enabled? best-split-enabled?
-     :load-constraint 0.45
+     :load-constraint 0.25
      :node-capacity 100 
      :available-nodes 3
      }))
