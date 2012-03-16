@@ -604,17 +604,31 @@
     ))
 
 (defn update-destination! [allocator-data last-comp-pair destination left right]
-  (let [task->component (:task->component allocator-data)
+  (let [comp->cluster (:comp->cluster allocator-data)
+        task->component (:task->component allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         task->usage (:task->usage allocator-data)
         comp-pair [(task->component left)(task->component right)]]
-    (if-not (= comp-pair @last-comp-pair)
-      (do
-        (swap! destination (fn[a](.top cluster->cap)))
-        (swap! last-comp-pair (fn[a] comp-pair)))
-      (when-not (fits? allocator-data @destination task->usage left right)
-        (swap! destination (fn[a](.top cluster->cap)))
-        ))
+
+    (cond
+      (contains? @comp->cluster left)
+            (swap! destination (fn[a](@comp->cluster left)))
+      (contains? @comp->cluster right)
+            (swap! destination (fn[a](@comp->cluster right)))
+      (not= comp-pair @last-comp-pair)
+            (swap! destination (fn[a](.top cluster->cap)))
+      (false? (fits? allocator-data @destination task->usage left right))
+            (swap! destination (fn[a](.top cluster->cap))))
+
+    (swap! last-comp-pair (fn[a] comp-pair))
+
+;    (if-not (= comp-pair @last-comp-pair)
+;      (do ; here I should check also if one of tasks is already allocated
+;        (swap! destination (fn[a](.top cluster->cap)))
+;        (swap! last-comp-pair (fn[a] comp-pair)))
+;      (when-not (fits? allocator-data @destination task->usage left right)
+;        (swap! destination (fn[a](.top cluster->cap)))
+;        ))
     ))
 
 (defn break-pair-link [allocator-data left right]

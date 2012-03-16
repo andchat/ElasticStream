@@ -95,9 +95,9 @@
     ))
 
 (defn test [cap]
-  (let [comp->task {4 [1 2], 2 [3 4 5], 3 [6 7], 1 [8 9 10 11 12 13]}
-        comp->usage {1 10, 2 20, 3 10, 4 15}
-        comp->IPC {[1 2] 3000, [2 3] 2000, [3 4] 1500, [2 4] 700}
+  (let [comp->task {4 [1 2], 2 [3 4 5], 3 [6 7 8 9], 1 [10 11 12 13]}
+        comp->usage {1 15, 2 5, 3 19, 4 18}
+        comp->IPC {[1 2] 800, [2 3] 1800, [3 4] 1500, [2 4] 2000}
 
         task->component (apply merge
                           (for [ct comp->task t (second ct)]
@@ -118,11 +118,13 @@
                                  :let [c-us (comp->IPC c)]
                                  :let [us (float (/ c-us (* cnt1 cnt2)))]]
                              {[t1 t2] us}))]
-    (print comp->task "\n")
-    (print comp->usage "\n")
-    (print comp->IPC "\n")
-    (print task->component "\n")
-    (print task->usage "\n")
-    (print ltask+rtask->IPC "\n")
+    (print "----------------------------------" "\n")
+    (print "comp->task" comp->task "\n")
+    (print "comp->usage" comp->usage "\n")
+    (print "comp->IPC" comp->IPC "\n")
+    (print "task->component" task->component "\n")
+    (print "task->usage" task->usage "\n")
+    (print "ltask+rtask->IPC" ltask+rtask->IPC "\n")
     (test-alloc task->component task->usage ltask+rtask->IPC cap)
     ))
+
