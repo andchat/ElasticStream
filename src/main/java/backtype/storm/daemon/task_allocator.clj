@@ -36,6 +36,18 @@
   (second 
     (apply min-key (fn [[k v]] v) splits)))
 
+(defn reset-queue! [allocator-data]
+  (let [queue (:queue allocator-data)
+        lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
+        new-pairs (doall
+                    (map (fn [[k v]]
+                         [k (if (= v 0) 0 (@lcomp+rcomp->IPC k))]) queue))]
+    (log-message "reset-queue 1:" (pr-str queue))
+    (.clear queue)
+    (doall (map #(.offer queue %) new-pairs))
+    (log-message "reset-queue 2:" (pr-str queue))
+    ))
+
 ; constant
 (defn fuse [allocator-data destination vertex-usage left right]
   (let [comp->cluster (:comp->cluster allocator-data)
@@ -164,6 +176,7 @@
          splits (:splits allocator-data)
          queue (:queue allocator-data)
          cluster->cap (:cluster->cap allocator-data)
+         linear-edge-update? (:linear-edge-update? allocator-data)
 
          capacity (.find cluster->cap destination)
          usage-sum (atom 0)
@@ -221,7 +234,10 @@
       (log-message " queue:" queue)
 
       (fuse allocator-data destination @comp->usage
-        (str left ".1") (str right ".1")))
+        (str left ".1") (str right ".1"))
+
+      (when linear-edge-update?
+            (reset-queue! allocator-data)))
     ))
 
 (defn split-both [allocator-data left right destination]
@@ -262,7 +278,9 @@
         comp->usage (:comp->usage allocator-data)
         comp->cluster (:comp->cluster allocator-data)
         task->usage (:task->usage allocator-data)
-        broken-links (:broken-links allocator-data)       
+        broken-links (:broken-links allocator-data)
+        linear-edge-update? (:linear-edge-update? allocator-data)
+
         to-keep (if (@comp->cluster left)
                    left
                    right)
@@ -312,7 +330,10 @@
         (log-message " comp->usage:" @comp->usage)
         (log-message " queue:" queue)
 
-        (fuse allocator-data destination @comp->usage to-keep (str to-split ".1"))))
+        (fuse allocator-data destination @comp->usage to-keep (str to-split ".1"))
+
+        (when linear-edge-update?
+                    (reset-queue! allocator-data))))
     ))
 
 (defn fits? [allocator-data destination vertex->usage left right]
@@ -499,8 +520,9 @@
     (log-message "unassigned:" @unassigned)
     ))
 
-(defnk mk-allocator-data [task->component task->usage ltask+rtask->IPC
-                         :best-split-enabled? false]
+(defnk mk-allocator-data [task->component task->usage ltask+rtask->IPC load-con
+                         :best-split-enabled? false
+                         :linear-edge-update? false]
   (let [lcomp+rcomp->IPC (get-lcomp+rcomp->IPC
                            task->component ltask+rtask->IPC)] ;linear
     {:task->component task->component
@@ -539,7 +561,8 @@
      :split-candidates (atom {})
      :broken-links (atom #{})
      :best-split-enabled? best-split-enabled?
-     :load-constraint 0.25
+     :linear-edge-update? linear-edge-update?
+     :load-constraint load-con
      :node-capacity 100 
      :available-nodes 3
      }))
@@ -555,11 +578,13 @@
              (range available-nodes))) 
     ))
 
-(defnk allocator-alg1 [task->component task->usage ltask+rtask->IPC
-                      :best-split-enabled? false]
+(defnk allocator-alg1 [task->component task->usage ltask+rtask->IPC load-con
+                      :best-split-enabled? false
+                      :linear-edge-update? false]
   (let [allocator-data (mk-allocator-data task->component
-                         task->usage ltask+rtask->IPC
-                         :best-split-enabled? best-split-enabled?)
+                         task->usage ltask+rtask->IPC load-con
+                         :best-split-enabled? best-split-enabled?
+                         :linear-edge-update? linear-edge-update?)
         queue (:queue allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
@@ -675,9 +700,9 @@
     [[left right] (if comp-IPC comp-IPC 0) task-IPC]
     ))
 
-(defn allocator-alg2 [task->component task->usage ltask+rtask->IPC]
+(defn allocator-alg2 [task->component task->usage ltask+rtask->IPC load-con]
   (let [allocator-data (mk-allocator-data task->component
-                         task->usage ltask+rtask->IPC)
+                         task->usage ltask+rtask->IPC load-con)
         queue (:queue allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         ltask+rtask->IPC (:ltask+rtask->IPC allocator-data)
@@ -779,20 +804,27 @@
     ))
 
 (defn allocate-tasks [storm-cluster-state supervisor-ids->task-usage]
-  (let [task->component (get-task->component storm-cluster-state)
-        task->usage (apply merge-with +
-                      (map (fn[[a1 a2]] a1)
-                        (vals supervisor-ids->task-usage))) ; linear
-        ltask+rtask->IPC (apply merge-with +
-                           (map (fn[[a1 a2]] a2)
-                             (vals supervisor-ids->task-usage)));linear
+  (let [;task->component (get-task->component storm-cluster-state)
+        ;task->usage (apply merge-with +
+        ;              (map (fn[[a1 a2]] a1)
+        ;                (vals supervisor-ids->task-usage))) ; linear
+        ;ltask+rtask->IPC (apply merge-with +
+        ;                   (map (fn[[a1 a2]] a2)
+        ;                     (vals supervisor-ids->task-usage)));linear
+
+        load-con 0.4
+        task->component {1 1, 2 2, 3 3, 4 3, 5 4, 6 4, 7 5, 8 5, 9 5, 10 6, 11 6, 12 6}
+        task->usage {1 10.0, 2 10.0, 3 5.0, 4 5.0, 5 5.0, 6 5.0, 7 10.0, 8 10.0, 9 10.0, 10 10.0, 11 10.0, 12 10.0}
+        ltask+rtask->IPC {[6 7] 116.666664, [9 10] 166.66667, [5 7] 116.666664, [6 8] 116.666664, [8 10] 166.66667, [9 11] 166.66667, [1 3] 500.0, [2 5] 500.0, [4 7] 116.666664, [5 8] 116.666664, [6 9] 116.666664, [7 10] 166.66667, [8 11] 166.66667, [9 12] 166.66667, [1 4] 500.0, [2 6] 500.0, [3 7] 116.666664, [4 8] 116.666664, [5 9] 116.666664, [7 11] 166.66667, [8 12] 166.66667, [3 8] 116.666664, [4 9] 116.666664, [7 12] 166.66667, [3 9] 116.666664}
         
         alloc-1 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC)
+                  task->usage ltask+rtask->IPC load-con)
         alloc-2 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC :best-split-enabled? true)
-        alloc-3 (allocator-alg2 task->component
-                  task->usage ltask+rtask->IPC)]
+                  task->usage ltask+rtask->IPC load-con :best-split-enabled? true)
+        alloc-3 (allocator-alg1 task->component
+                  task->usage ltask+rtask->IPC load-con :best-split-enabled? true :linear-edge-update? true)
+        alloc-4 (allocator-alg2 task->component
+                  task->usage ltask+rtask->IPC load-con)]
 
     (when (> (count task->usage) 0)
       (log-message "Total IPC:" (reduce + (vals ltask+rtask->IPC)))
@@ -806,5 +838,9 @@
 
       (log-message "Allocation 3:" (pr-str alloc-3))
       (log-message "Allocation 3 IPC gain:"
-        (evaluate-alloc (first alloc-3) ltask+rtask->IPC)))
+        (evaluate-alloc (first alloc-3) ltask+rtask->IPC))
+
+      (log-message "Allocation 4:" (pr-str alloc-4))
+      (log-message "Allocation 4 IPC gain:"
+        (evaluate-alloc (first alloc-4) ltask+rtask->IPC)))
     ))
