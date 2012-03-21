@@ -184,7 +184,7 @@
          splits-set(apply merge-with merge
                      (for [[k v] min-bal-splits
                            :let [split-size (splits-usage k)]]
-                       (if (< (+ @usage-sum split-size) capacity)
+                       (if (<= (+ @usage-sum split-size) capacity)
                          (do
                            (swap! usage-sum (partial + split-size))
                            {1 {k v}})
@@ -328,6 +328,7 @@
 
         (log-message " component->task:" @component->task)
         (log-message " comp->usage:" @comp->usage)
+        (log-message "@splits:" (pr-str @splits))
         (log-message " queue:" queue)
 
         (fuse allocator-data destination @comp->usage to-keep (str to-split ".1"))
@@ -364,12 +365,14 @@
         splits (:splits allocator-data)
         component->task (:component->task allocator-data)
         lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
-        
+
+        ;(pending-splits allocator-data (@splits left))
+        ;(pending-splits allocator-data (@splits right))
         l-splits (if (contains? @splits left)
-                   (pending-splits allocator-data (@splits left))
+                   [(str left ".2")]
                    [])
         r-splits (if (contains? @splits right)
-                   (pending-splits allocator-data (@splits right))
+                   [(str right ".2")]
                    [])
         cnt (count (concat l-splits r-splits))
         new-left (if (> (count l-splits) 0)
@@ -413,15 +416,12 @@
       (swap! unlinked-tasks into (@component->task vertex)))
     ))
 
-(defn try-fuse-clusters [allocator-data left right]
+(defn try-fuse-clusters [allocator-data l-cluster r-cluster]
   (let [comp->cluster (:comp->cluster allocator-data)
         cluster->comp (:cluster->comp allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         load-constraint (:load-constraint allocator-data)
         node-capacity (:node-capacity allocator-data)
-
-        l-cluster (@comp->cluster left)
-        r-cluster (@comp->cluster right)
         
         l-cap (.find cluster->cap l-cluster)
         r-cap (.find cluster->cap r-cluster)
@@ -429,27 +429,27 @@
 
         l-usage (- total-cap l-cap)
         r-usage (- total-cap r-cap)]
+    (when (not= l-cluster r-cluster)
+      (log-message "(+ l-usage r-usage)" (+ l-usage r-usage))
+      (when (<= (+ l-usage r-usage) total-cap)
+        (doall
+          (for [comp (@cluster->comp r-cluster)]
+            (do
+              (swap! comp->cluster assoc-in [comp] l-cluster)
+              (swap! cluster->comp update-in [l-cluster] into [comp]))
+            ))
 
-    (log-message "(+ l-usage r-usage)" (+ l-usage r-usage))
-    (when (<= (+ l-usage r-usage) total-cap)
-      (doall
-        (for [comp (@cluster->comp r-cluster)]
-          (do
-            (swap! comp->cluster assoc-in [comp] l-cluster)
-            (swap! cluster->comp update-in [l-cluster] into [comp]))
-          ))
-      
-      (swap! cluster->comp dissoc-in [r-cluster])
-      (.remove cluster->cap r-cluster)
-      (.insert cluster->cap r-cluster total-cap)
+        (swap! cluster->comp dissoc-in [r-cluster])
+        (.remove cluster->cap r-cluster)
+        (.insert cluster->cap r-cluster total-cap)
 
-      (.remove cluster->cap l-cluster)
-      (.insert cluster->cap l-cluster (- total-cap (+ l-usage r-usage)))
+        (.remove cluster->cap l-cluster)
+        (.insert cluster->cap l-cluster (- total-cap (+ l-usage r-usage)))
 
-      (log-message "Fuse clusters...")
-      (log-message "comp->cluster:" @comp->cluster)
-      (log-message "cluster->comp:" @cluster->comp)
-      (log-message "cluster->cap:" (.toTree cluster->cap)))
+        (log-message "Fuse clusters...")
+        (log-message "comp->cluster:" @comp->cluster)
+        (log-message "cluster->comp:" @cluster->comp)
+        (log-message "cluster->cap:" (.toTree cluster->cap))))
     ))
 
 
@@ -464,6 +464,7 @@
         fused? (or (contains? @comp->cluster left)
                  (contains? @comp->cluster right))]
     ; first check if any vertex is splited!
+    (log-message "Considering " left " " right)
     (if (is-splitted? allocator-data left right) ; constant
       (resolve-splits! allocator-data left right IPC) ;logc to insert the pair to the heap
       (if (<= IPC 0)
@@ -475,7 +476,7 @@
             (if fused?
               (split-one allocator-data left right destination)
               (split-both allocator-data left right destination)))
-          (try-fuse-clusters allocator-data left right)
+          (try-fuse-clusters allocator-data (@comp->cluster left) (@comp->cluster right))
           )))
     ))
 
@@ -520,7 +521,14 @@
     (log-message "unassigned:" @unassigned)
     ))
 
-(defnk mk-allocator-data [task->component task->usage ltask+rtask->IPC load-con
+(defn fuse-clusters [allocator-data]
+    (let [available-nodes (:available-nodes allocator-data)]
+      (doall
+        (for [i (range available-nodes)
+           j (range (inc i) available-nodes)]
+         (try-fuse-clusters allocator-data i j)))))
+
+(defnk mk-allocator-data [task->component task->usage ltask+rtask->IPC load-con available-nodes
                          :best-split-enabled? false
                          :linear-edge-update? false]
   (let [lcomp+rcomp->IPC (get-lcomp+rcomp->IPC
@@ -564,7 +572,7 @@
      :linear-edge-update? linear-edge-update?
      :load-constraint load-con
      :node-capacity 100 
-     :available-nodes 3
+     :available-nodes available-nodes
      }))
 
 (defn setup-clusters [allocator-data]
@@ -578,11 +586,11 @@
              (range available-nodes))) 
     ))
 
-(defnk allocator-alg1 [task->component task->usage ltask+rtask->IPC load-con
+(defnk allocator-alg1 [task->component task->usage ltask+rtask->IPC load-con available-nodes
                       :best-split-enabled? false
                       :linear-edge-update? false]
   (let [allocator-data (mk-allocator-data task->component
-                         task->usage ltask+rtask->IPC load-con
+                         task->usage ltask+rtask->IPC load-con available-nodes
                          :best-split-enabled? best-split-enabled?
                          :linear-edge-update? linear-edge-update?)
         queue (:queue allocator-data)
@@ -598,6 +606,7 @@
 
       (setup-clusters allocator-data) ; linear
 
+      (log-message "###############################################")
       (log-message "Starting allocation...")
       (log-message "queue:" (pr-str queue))
       (log-message "cluster->cap:" (.toTree cluster->cap))
@@ -618,6 +627,7 @@
       (log-message "comp->cluster:" (pr-str (:comp->cluster allocator-data)))
       (log-message "unlinked-tasks:" (pr-str (:unlinked-tasks allocator-data)))
 
+      (fuse-clusters allocator-data)
       ; Handle unlinked-tasks
       (allocate-unlinked-tasks allocator-data)
 
@@ -687,7 +697,7 @@
           (if (fits? allocator-data @destination task->usage left right)
             (fuse allocator-data @destination task->usage left right)
             (break-pair-link allocator-data left right)))
-        (log-message "ignoring...")))
+        (try-fuse-clusters allocator-data (@comp->cluster left) (@comp->cluster right))))
     ))
 
 
@@ -700,9 +710,9 @@
     [[left right] (if comp-IPC comp-IPC 0) task-IPC]
     ))
 
-(defn allocator-alg2 [task->component task->usage ltask+rtask->IPC load-con]
+(defn allocator-alg2 [task->component task->usage ltask+rtask->IPC load-con available-nodes]
   (let [allocator-data (mk-allocator-data task->component
-                         task->usage ltask+rtask->IPC load-con)
+                         task->usage ltask+rtask->IPC load-con available-nodes)
         queue (:queue allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         ltask+rtask->IPC (:ltask+rtask->IPC allocator-data)
@@ -718,6 +728,7 @@
 
       (setup-clusters allocator-data) ; linear
 
+      (log-message "###############################################")
       (log-message "Starting allocation...")
       (log-message "queue:" (pr-str queue))
       (log-message "cluster->cap:" (.toTree cluster->cap))
@@ -737,6 +748,7 @@
       (log-message "comp->cluster:" (pr-str (:comp->cluster allocator-data)))
       (log-message "unlinked-tasks:" (pr-str (:unlinked-tasks allocator-data)))
 
+      (fuse-clusters allocator-data)
       ; Handle unlinked-tasks
       (allocate-unlinked-tasks allocator-data)
 
@@ -812,19 +824,22 @@
         ;                   (map (fn[[a1 a2]] a2)
         ;                     (vals supervisor-ids->task-usage)));linear
 
-        load-con 0.4
-        task->component {1 1, 2 2, 3 3, 4 3, 5 4, 6 4, 7 5, 8 5, 9 5, 10 6, 11 6, 12 6}
-        task->usage {1 10.0, 2 10.0, 3 5.0, 4 5.0, 5 5.0, 6 5.0, 7 10.0, 8 10.0, 9 10.0, 10 10.0, 11 10.0, 12 10.0}
-        ltask+rtask->IPC {[6 7] 116.666664, [9 10] 166.66667, [5 7] 116.666664, [6 8] 116.666664, [8 10] 166.66667, [9 11] 166.66667, [1 3] 500.0, [2 5] 500.0, [4 7] 116.666664, [5 8] 116.666664, [6 9] 116.666664, [7 10] 166.66667, [8 11] 166.66667, [9 12] 166.66667, [1 4] 500.0, [2 6] 500.0, [3 7] 116.666664, [4 8] 116.666664, [5 9] 116.666664, [7 11] 166.66667, [8 12] 166.66667, [3 8] 116.666664, [4 9] 116.666664, [7 12] 166.66667, [3 9] 116.666664}
-        
+        load-con 0.58
+        available-nodes 10
+        task->component {32 3, 33 3, 34 3, 41 4, 42 4, 11 1, 43 4, 12 1, 44 4, 13 1, 45 4, 14 1, 46 4, 15 1, 47 4, 16 1, 48 4, 49 4, 51 5, 52 5, 21 2, 53 5, 22 2, 54 5, 23 2, 55 5, 24 2, 56 5, 25 2, 57 5, 26 2, 58 5, 59 5, 31 3}
+        task->usage {32 6.25, 33 6.25, 34 6.25, 41 5.5555553, 42 5.5555553, 11 2.5, 43 5.5555553, 12 2.5, 44 5.5555553, 13 2.5, 45 5.5555553, 14 2.5, 46 5.5555553, 15 2.5, 47 5.5555553, 16 2.5, 48 5.5555553, 49 5.5555553, 51 3.3333333, 52 3.3333333, 21 13.333333, 53 3.3333333, 22 13.333333, 54 3.3333333, 23 13.333333, 55 3.3333333, 24 13.333333, 56 3.3333333, 25 13.333333, 57 3.3333333, 26 13.333333, 58 3.3333333, 59 3.3333333, 31 6.25}
+        ltask+rtask->IPC {[49 51] 2.4691358, [48 51] 2.4691358, [49 52] 2.4691358, [47 51] 2.4691358, [48 52] 2.4691358, [49 53] 2.4691358, [46 51] 2.4691358, [47 52] 2.4691358, [16 21] 27.777779, [48 53] 2.4691358, [49 54] 2.4691358, [26 31] 29.166666, [45 51] 2.4691358, [46 52] 2.4691358, [15 21] 27.777779, [47 53] 2.4691358, [16 22] 27.777779, [48 54] 2.4691358, [49 55] 2.4691358, [25 31] 29.166666, [26 32] 29.166666, [34 41] 8.333333, [44 51] 2.4691358, [45 52] 2.4691358, [14 21] 27.777779, [46 53] 2.4691358, [15 22] 27.777779, [47 54] 2.4691358, [16 23] 27.777779, [48 55] 2.4691358, [49 56] 2.4691358, [24 31] 29.166666, [25 32] 29.166666, [26 33] 29.166666, [34 42] 8.333333, [43 51] 2.4691358, [44 52] 2.4691358, [13 21] 27.777779, [45 53] 2.4691358, [14 22] 27.777779, [46 54] 2.4691358, [15 23] 27.777779, [47 55] 2.4691358, [16 24] 27.777779, [48 56] 2.4691358, [49 57] 2.4691358, [23 31] 29.166666, [24 32] 29.166666, [25 33] 29.166666, [26 34] 29.166666, [33 41] 8.333333, [34 43] 8.333333, [42 51] 2.4691358, [43 52] 2.4691358, [12 21] 27.777779, [44 53] 2.4691358, [13 22] 27.777779, [45 54] 2.4691358, [14 23] 27.777779, [46 55] 2.4691358, [15 24] 27.777779, [47 56] 2.4691358, [16 25] 27.777779, [48 57] 2.4691358, [49 58] 2.4691358, [22 31] 29.166666, [23 32] 29.166666, [24 33] 29.166666, [25 34] 29.166666, [32 41] 8.333333, [33 42] 8.333333, [34 44] 8.333333, [41 51] 2.4691358, [42 52] 2.4691358, [11 21] 27.777779, [43 53] 2.4691358, [12 22] 27.777779, [44 54] 2.4691358, [13 23] 27.777779, [45 55] 2.4691358, [14 24] 27.777779, [46 56] 2.4691358, [15 25] 27.777779, [47 57] 2.4691358, [16 26] 27.777779, [48 58] 2.4691358, [49 59] 2.4691358, [21 31] 29.166666, [22 32] 29.166666, [23 33] 29.166666, [24 34] 29.166666, [31 41] 8.333333, [32 42] 8.333333, [33 43] 8.333333, [34 45] 8.333333, [41 52] 2.4691358, [42 53] 2.4691358, [11 22] 27.777779, [43 54] 2.4691358, [12 23] 27.777779, [44 55] 2.4691358, [13 24] 27.777779, [45 56] 2.4691358, [14 25] 27.777779, [46 57] 2.4691358, [15 26] 27.777779, [47 58] 2.4691358, [48 59] 2.4691358, [21 32] 29.166666, [22 33] 29.166666, [23 34] 29.166666, [31 42] 8.333333, [32 43] 8.333333, [33 44] 8.333333, [34 46] 8.333333, [41 53] 2.4691358, [42 54] 2.4691358, [11 23] 27.777779, [43 55] 2.4691358, [12 24] 27.777779, [44 56] 2.4691358, [13 25] 27.777779, [45 57] 2.4691358, [14 26] 27.777779, [46 58] 2.4691358, [47 59] 2.4691358, [21 33] 29.166666, [22 34] 29.166666, [31 43] 8.333333, [32 44] 8.333333, [33 45] 8.333333, [34 47] 8.333333, [41 54] 2.4691358, [42 55] 2.4691358, [11 24] 27.777779, [43 56] 2.4691358, [12 25] 27.777779, [44 57] 2.4691358, [13 26] 27.777779, [45 58] 2.4691358, [46 59] 2.4691358, [21 34] 29.166666, [31 44] 8.333333, [32 45] 8.333333, [33 46] 8.333333, [34 48] 8.333333, [41 55] 2.4691358, [42 56] 2.4691358, [11 25] 27.777779, [43 57] 2.4691358, [12 26] 27.777779, [44 58] 2.4691358, [45 59] 2.4691358, [31 45] 8.333333, [32 46] 8.333333, [33 47] 8.333333, [34 49] 8.333333, [41 56] 2.4691358, [42 57] 2.4691358, [11 26] 27.777779, [43 58] 2.4691358, [44 59] 2.4691358, [31 46] 8.333333, [32 47] 8.333333, [33 48] 8.333333, [41 57] 2.4691358, [42 58] 2.4691358, [43 59] 2.4691358, [31 47] 8.333333, [32 48] 8.333333, [33 49] 8.333333, [41 58] 2.4691358, [42 59] 2.4691358, [31 48] 8.333333, [32 49] 8.333333, [41 59] 2.4691358, [31 49] 8.333333}
+
         alloc-1 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC load-con)
+                  task->usage ltask+rtask->IPC load-con available-nodes)
         alloc-2 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC load-con :best-split-enabled? true)
+                  task->usage ltask+rtask->IPC load-con available-nodes
+                  :best-split-enabled? true)
         alloc-3 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC load-con :best-split-enabled? true :linear-edge-update? true)
+                  task->usage ltask+rtask->IPC load-con available-nodes
+                  :best-split-enabled? true :linear-edge-update? true)
         alloc-4 (allocator-alg2 task->component
-                  task->usage ltask+rtask->IPC load-con)]
+                  task->usage ltask+rtask->IPC load-con available-nodes)]
 
     (when (> (count task->usage) 0)
       (log-message "Total IPC:" (reduce + (vals ltask+rtask->IPC)))

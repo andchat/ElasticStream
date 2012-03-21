@@ -1,5 +1,6 @@
 ;(import java.util.Random)
 (use '(backtype.storm.daemon task_allocator))
+(use '[clojure.contrib.def :only [defnk]])
 ;(defrecord TaskInfo [component-id])
 
 ;(.getAllThreadIds a)
@@ -56,48 +57,95 @@
 
 ;(def v (map #(evaluate-alloc % ltask+rtask->IPC) f))
 
-(defn max-IPC-gain [task->usage ltask+rtask->IPC cap]
-  (let [comps (loop [f (combinations [1 2 3 4 5 6 7 8 9 10 11 12 13] [0 1 2] {} 0)]
+(defn max-IPC-gain [task->usage ltask+rtask->IPC loan-con]
+  (let [comps (loop [f (combinations (keys task->usage) [0 1 2] {} 0)]
                 (if (map? (first f))
                   f
                   (recur (apply concat f))))
 
-        f (filter #(is-valid? % task->usage cap) comps)
+        f (filter #(is-valid? % task->usage loan-con) comps)
         v (map (fn[a] [(evaluate-alloc a ltask+rtask->IPC) a]) f)]
     (apply max-key first v)
     ))
 
-(defn test-alloc [task->component task->usage ltask+rtask->IPC cap]
+(defn test-alloc [task->component task->usage ltask+rtask->IPC load-con available-nodes]
   (let [alloc-1 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC)
+                  task->usage ltask+rtask->IPC load-con available-nodes)
         alloc-2 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC :best-split-enabled? true)
-        alloc-3 (allocator-alg2 task->component
-                  task->usage ltask+rtask->IPC)]
+                  task->usage ltask+rtask->IPC load-con available-nodes
+                  :best-split-enabled? true)
+        alloc-3 (allocator-alg1 task->component
+                  task->usage ltask+rtask->IPC load-con available-nodes
+                  :best-split-enabled? true :linear-edge-update? true)
+        alloc-4 (allocator-alg2 task->component
+                  task->usage ltask+rtask->IPC load-con available-nodes)]
 
-    (print "Total IPC:" (reduce + (vals ltask+rtask->IPC)) "\n")
     (print "Allocation 1:" (pr-str (first alloc-1)) "\n")
     (print "Allocation 1:" (pr-str (second alloc-1)) "\n")
     (print "Allocation 1 IPC gain:"
       (evaluate-alloc (first alloc-1) ltask+rtask->IPC) "\n")
+    (print "Allocation 1:" (pr-str (count (apply concat (vals (first alloc-1))))) "\n\n")
 
     (print "Allocation 2:" (pr-str (first alloc-2)) "\n")
     (print "Allocation 2:" (pr-str (second alloc-2)) "\n")
     (print "Allocation 2 IPC gain:"
       (evaluate-alloc (first alloc-2) ltask+rtask->IPC) "\n")
+    (print "Allocation 2:" (pr-str (count (apply concat (vals (first alloc-2))))) "\n\n")
 
     (print "Allocation 3:" (pr-str (first alloc-3)) "\n")
     (print "Allocation 3:" (pr-str (second alloc-3)) "\n")
     (print "Allocation 3 IPC gain:"
       (evaluate-alloc (first alloc-3) ltask+rtask->IPC) "\n")
+    (print "Allocation 3:" (pr-str (count (apply concat (vals (first alloc-3))))) "\n\n")
 
-    (print "best:" (max-IPC-gain task->usage ltask+rtask->IPC cap) "\n")
+    (print "Allocation 4:" (pr-str (first alloc-4)) "\n")
+    (print "Allocation 4:" (pr-str (second alloc-4)) "\n")
+    (print "Allocation 4 IPC gain:"
+      (evaluate-alloc (first alloc-4) ltask+rtask->IPC) "\n")
+    (print "Allocation 4:" (pr-str (count (apply concat (vals (first alloc-4))))) "\n\n")
+
+    (if (<= (count task->usage) 12)
+        (print "best:" (max-IPC-gain task->usage ltask+rtask->IPC (int (* load-con 100))) "\n"))
     ))
 
-(defn test [cap]
-  (let [comp->task {4 [1 2], 2 [3 4 5], 3 [6 7 8 9], 1 [10 11 12 13]}
-        comp->usage {1 15, 2 5, 3 19, 4 18}
-        comp->IPC {[1 2] 800, [2 3] 1800, [3 4] 1500, [2 4] 2000}
+(defn test-alloc-multi [task->component task->usage ltask+rtask->IPC load-con end-con available-nodes]
+  (doall
+    (for [l (range (* load-con 100) (+ end-con 2) 2)
+        :let [l-dec (float (/ l 100))]
+        :let [alloc-1 (allocator-alg1 task->component
+                        task->usage ltask+rtask->IPC l-dec available-nodes)]
+        :let [alloc-2 (allocator-alg1 task->component
+                  task->usage ltask+rtask->IPC l-dec available-nodes
+                        :best-split-enabled? true)]
+        :let [alloc-3 (allocator-alg1 task->component
+                  task->usage ltask+rtask->IPC l-dec available-nodes
+                        :best-split-enabled? true :linear-edge-update? true)]
+        :let [alloc-4 (allocator-alg2 task->component
+                  task->usage ltask+rtask->IPC l-dec available-nodes)]
+        :let [best (if (and (<= (count task->usage) 12) (<= available-nodes 3))
+                     (max-IPC-gain task->usage ltask+rtask->IPC (int (* l-dec 100)))
+                     [])]
+          ]
+      (print l-dec " "
+        (evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
+        (evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
+        (evaluate-alloc (first alloc-3) ltask+rtask->IPC) " "
+        (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
+        (first best) " "
+        (count (apply concat (vals (first alloc-1)))) " "
+        (count (apply concat (vals (first alloc-2)))) " "
+        (count (apply concat (vals (first alloc-3)))) " "
+        (count (apply concat (vals (first alloc-4)))) " "
+        "\n")
+      ))
+  1)
+ 
+(defnk test [load-con :multi? false]
+  (let [available-nodes 10
+        comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58 59]}
+        ;comp->task {1 [11 12], 2 [21 22], 3 [31 32], 4 [41 42 43], 5 [51 52 53]}
+        comp->usage {1 15, 2 80, 3 25, 4 50, 5 30}
+        comp->IPC {[1 2] 1000, [2 3] 700, [3 4] 300, [4 5] 200}
 
         task->component (apply merge
                           (for [ct comp->task t (second ct)]
@@ -119,12 +167,20 @@
                                  :let [us (float (/ c-us (* cnt1 cnt2)))]]
                              {[t1 t2] us}))]
     (print "----------------------------------" "\n")
+    (print "load-con " load-con "\n")
     (print "comp->task" comp->task "\n")
     (print "comp->usage" comp->usage "\n")
     (print "comp->IPC" comp->IPC "\n")
     (print "task->component" task->component "\n")
     (print "task->usage" task->usage "\n")
     (print "ltask+rtask->IPC" ltask+rtask->IPC "\n")
-    (test-alloc task->component task->usage ltask+rtask->IPC cap)
+    (print "Total IPC:" (reduce + (vals ltask+rtask->IPC)) "\n")
+
+    (if-not multi?
+      (test-alloc task->component task->usage
+        ltask+rtask->IPC load-con available-nodes)
+      (test-alloc-multi task->component task->usage
+        ltask+rtask->IPC load-con (reduce + (vals comp->usage))
+        available-nodes))
     ))
 
