@@ -1,6 +1,7 @@
 ;(import java.util.Random)
 (use '(backtype.storm.daemon task_allocator))
 (use '[clojure.contrib.def :only [defnk]])
+(use 'clojure.java.io)
 ;(defrecord TaskInfo [component-id])
 
 ;(.getAllThreadIds a)
@@ -109,44 +110,45 @@
     ))
 
 (defn test-alloc-multi [task->component task->usage ltask+rtask->IPC load-con end-con available-nodes]
-  (doall
-    (for [l (range (* load-con 100) (+ end-con 2) 2)
-        :let [l-dec (float (/ l 100))]
-        :let [alloc-1 (allocator-alg1 task->component
-                        task->usage ltask+rtask->IPC l-dec available-nodes)]
-        :let [alloc-2 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC l-dec available-nodes
-                        :best-split-enabled? true)]
-        :let [alloc-3 (allocator-alg1 task->component
-                  task->usage ltask+rtask->IPC l-dec available-nodes
-                        :best-split-enabled? true :linear-edge-update? true)]
-        :let [alloc-4 (allocator-alg2 task->component
-                  task->usage ltask+rtask->IPC l-dec available-nodes)]
-        :let [best (if (and (<= (count task->usage) 12) (<= available-nodes 3))
-                     (max-IPC-gain task->usage ltask+rtask->IPC (int (* l-dec 100)))
-                     [])]
-          ]
-      (print l-dec " "
-        (evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
-        (evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
-        (evaluate-alloc (first alloc-3) ltask+rtask->IPC) " "
-        (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
-        (first best) " "
-        (count (apply concat (vals (first alloc-1)))) " "
-        (count (apply concat (vals (first alloc-2)))) " "
-        (count (apply concat (vals (first alloc-3)))) " "
-        (count (apply concat (vals (first alloc-4)))) " "
-        "\n")
-      ))
+  (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
+    (.write wrtr (str "load-constraint TD TD-Imp1 TD-Imp2 Simple\n"))
+    (doall
+      (for [l (range (* load-con 100) (+ end-con 2) 2)
+            :let [l-dec (float (/ l 100))]
+            :let [alloc-1 (allocator-alg1 task->component
+                            task->usage ltask+rtask->IPC l-dec available-nodes)]
+            :let [alloc-2 (allocator-alg1 task->component
+                            task->usage ltask+rtask->IPC l-dec available-nodes
+                            :best-split-enabled? true)]
+            :let [alloc-3 (allocator-alg1 task->component
+                            task->usage ltask+rtask->IPC l-dec available-nodes
+                            :best-split-enabled? true :linear-edge-update? true)]
+            :let [alloc-4 (allocator-alg2 task->component
+                            task->usage ltask+rtask->IPC l-dec available-nodes)]
+            :let [best (if (and (<= (count task->usage) 12) (<= available-nodes 3))
+                         (max-IPC-gain task->usage ltask+rtask->IPC (int (* l-dec 100)))
+                         [])]]
+        (.write wrtr 
+          (str l-dec " "
+            (evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
+            (evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
+            (evaluate-alloc (first alloc-3) ltask+rtask->IPC) " "
+            (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
+            (first best) " "
+            (count (apply concat (vals (first alloc-1)))) " "
+            (count (apply concat (vals (first alloc-2)))) " "
+            (count (apply concat (vals (first alloc-3)))) " "
+            (count (apply concat (vals (first alloc-4)))) " "
+            "\n"))
+        )))
   1)
  
 (defnk test [load-con :multi? false]
   (let [available-nodes 10
-        comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58 59]}
-        ;comp->task {1 [11 12], 2 [21 22], 3 [31 32], 4 [41 42 43], 5 [51 52 53]}
-        comp->usage {1 15, 2 80, 3 25, 4 50, 5 30}
-        comp->IPC {[1 2] 1000, [2 3] 700, [3 4] 300, [4 5] 200}
-
+   comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58], 6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78]}
+comp->usage {1 15, 2 80, 3 25, 4 50, 5 30, 6 10, 7 30}
+comp->IPC {[1 3] 700, [2 3] 300, [4 6] 1000, [5 6] 200, [3 7] 1600, [5 7] 1400}
+        
         task->component (apply merge
                           (for [ct comp->task t (second ct)]
                             {t (first ct)}))
@@ -168,6 +170,7 @@
                              {[t1 t2] us}))]
     (print "----------------------------------" "\n")
     (print "load-con " load-con "\n")
+    (print "available-nodes " available-nodes "\n")
     (print "comp->task" comp->task "\n")
     (print "comp->usage" comp->usage "\n")
     (print "comp->IPC" comp->IPC "\n")
