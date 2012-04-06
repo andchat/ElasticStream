@@ -136,9 +136,9 @@
             :let [alloc-5 (allocator-alg1 task->component
                             task->usage ltask+rtask->IPC l-dec available-nodes
                             )]
-            ;:let [alloc-6 (allocator-alg1 task->component
-            ;                task->usage ltask+rtask->IPC l-dec available-nodes
-            ;                :best-split-enabled? true)]
+            :let [alloc-6 (allocator-alg1 task->component
+                            task->usage ltask+rtask->IPC l-dec available-nodes
+                            :best-split-enabled? true)]
             :let [alloc-7 (allocator-alg1 task->component
                             task->usage ltask+rtask->IPC l-dec available-nodes
                             :best-split-enabled? true :linear-edge-update? true
@@ -155,7 +155,7 @@
             ;(evaluate-alloc (first alloc-3) ltask+rtask->IPC) " "
             (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
             (evaluate-alloc (first alloc-5) ltask+rtask->IPC) " "
-            ;(evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
+            (evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
             (evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
             (evaluate-alloc (first alloc-7) ltask+rtask->IPC) " "
             (first best) " "
@@ -174,13 +174,20 @@
  
 (defnk test [load-con :multi? false]
   (let [available-nodes  10
-comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58], 6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78]}
-comp->usage {1 40, 2 40, 3 400, 4 40, 5 40, 6 40, 7 40}
-comp->IPC {[1 3] 700, [2 3] 1300, [4 6] 1000, [5 6] 200, [3 7] 600, [6 7] 1400}
-; test
-;comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58], 6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78]}
-;comp->usage {1 15, 2 25, 3 80, 4 10, 5 30, 6 50, 7 30}
-;comp->IPC {[1 3] 700, [2 3] 300, [4 6] 1000, [5 6] 200, [3 7] 1600, [6 7] 1400}
+comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34],
+            4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58],
+            6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78],
+            8 [81 82 83 84 85 86 87 88 89], 9 [91 92 93 94 95 96 97 98 99]}
+comp->usage {1 10, 2 30, 3 70, 4 30, 5 70, 6 80, 7 20, 8 20, 9 10}
+comp->IPC {[1 3] 700, [2 3] 1300, [4 6] 1000, [5 6] 200, [3 7] 600, [6 7] 1400,
+           [1 8] 1000, [2 8] 200, [8 9] 600, [4 9] 1200}
+
+
+
+        ; test
+        ;comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58], 6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78]}
+        ;comp->usage {1 15, 2 25, 3 80, 4 10, 5 30, 6 50, 7 30}
+        ;comp->IPC {[1 3] 700, [2 3] 300, [4 6] 1000, [5 6] 200, [3 7] 1600, [6 7] 1400}
         
         task->component (apply merge
                           (for [ct comp->task t (second ct)]
