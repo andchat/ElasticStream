@@ -1153,7 +1153,7 @@
                       (* r-usage (count r-tasks)))]
     (<= total-usage capacity)))
 
-(defn calc-initial-spread [allocator-data destinations left [right ipc]]
+(defn calc-initial-spread [allocator-data left [right ipc]]
   (let [component->task (:component->task allocator-data)
         comp->usage (:comp->usage allocator-data)
 
@@ -1163,6 +1163,7 @@
         ;(.remove cluster->cap destination)
         ;(.insert cluster->cap destination (- capacity total-usage))
 
+        destinations (atom {})
         initial-alloc (atom {})
         more-tasks? (atom true)
 
@@ -1172,8 +1173,8 @@
         l-usage (task->usage (first @s2-left))
         r-usage (task->usage (first @s2-right))
 
-        alloc-fn (fn [d c l r]
-                   (swap! initial-alloc assoc-in [d] {:l l, :r r})
+        alloc-fn (fn [d c l-t r-t]
+                   (swap! initial-alloc assoc-in [d] {left l-t, right r-t})
                    (swap! destinations update-in [d] (fn[_] c))
                    (.remove cluster->cap d))
 
@@ -1212,27 +1213,171 @@
     [destinations initial-alloc]
     ))
 
+(defn node-ipc-gain [allocator-data centroid alloc]
+  (let [component->task (:component->task allocator-data)
+        lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
+
+        c-t-cnt (count (alloc centroid))
+        total-c (count (@component->task centroid))
+        
+        alloc (dissoc alloc centroid)]
+    (reduce +
+      (for [a alloc
+            :let [k (first a)]
+            :let [r-t-cnt (count (second a))]
+            :let [total-r (count (@component->task k))]
+            :let [ipc (or
+                        (@lcomp+rcomp->IPC [centroid k])
+                        (@lcomp+rcomp->IPC [k centroid]))]
+            ]
+        (if (or (= c-t-cnt 0) (= r-t-cnt 0))
+          0
+          (do
+            (-> (/ ipc (* total-r total-c))
+              (* c-t-cnt)
+              (* r-t-cnt))
+            ))
+        ))
+    ))
+
+(defn alloc-ipc-gain [allocator-data centroid alloc]
+  (reduce +
+    (map #(node-ipc-gain allocator-data centroid %)
+      (vals alloc))))
+
+(defn calc-candidate-alloc [allocator-data initial-spread destinations centroid-queue centroid]
+  (let [component->task (:component->task allocator-data)
+        task->usage (:task->usage allocator-data)
+        cand-des (atom destinations)
+        cand-alloc (atom initial-spread)
+        res-des (atom {})
+        assigned (atom [])]
+
+    (while (and (> (count @cand-des) 0) (.peek centroid-queue))
+      (let [d (first @cand-des)
+            d-id (first d)
+            d-cap (second d)
+
+            next-v (first (.peek centroid-queue)) ; does not remove
+            next-t (@component->task next-v)
+            next-usage (task->usage (first next-t))
+            
+            cnt (if (=  next-v (first @assigned))
+                  (second @assigned)
+                  0)
+
+            t-fit (min
+                    (floor (float (/ d-cap next-usage)))
+                    (- (count next-t) cnt))]
+        (when (> t-fit 0)
+          (swap! cand-alloc update-in [d-id]
+            (partial merge-with into) {next-v (subvec next-t cnt (+ cnt t-fit))})
+          (swap! cand-des update-in [d-id] (fn[_] (- d-cap (* t-fit next-usage))))
+          (reset! assigned [next-v (+ cnt t-fit)]))
+
+      ;(log-message "cand-alloc: d1:" d-id" d2:" d-cap)
+      ;(log-message "cand-alloc: nv:" next-v " nt:" next-t " nu:" next-usage)
+      ;(log-message "cand-alloc:alloc:" @cand-alloc)
+      ;(log-message "cand-alloc:des:" @cand-des)
+      ;(log-message "cand-alloc:assigned:" @assigned)
+      ;(log-message "cand-alloc**********************")
+
+      (if (= (+ cnt t-fit) (count next-t))
+        (.poll centroid-queue)
+        (do
+          (swap! res-des assoc-in [d-id] (@cand-des d-id))
+          (swap! cand-des dissoc d-id)))
+      ))
+      [@cand-alloc @res-des
+       (alloc-ipc-gain allocator-data centroid @cand-alloc)]
+    ))
 
 (defn allocate-centroid [allocator-data [centroid total-ipc]]
   (let [lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
-        queue (get-comp-queue centroid lcomp+rcomp->IPC)
         cluster->cap (:cluster->cap allocator-data)
-        destination (.top cluster->cap)
-
-        destinations (atom {})
+        task->usage (:task->usage allocator-data)
         
+        centroid-queue (get-comp-queue centroid lcomp+rcomp->IPC)
 
-        initial-spread (calc-initial-spread allocator-data destinations
-            centroid (.poll queue))
+        ret (calc-initial-spread allocator-data centroid (.poll centroid-queue))
+        destinations (first ret)
+        initial-spread (second ret)
+        cur-spread (atom @initial-spread)
+
+        first-alloc (calc-candidate-alloc allocator-data @initial-spread @destinations
+                      (.clone centroid-queue) centroid)
+
+        best-alloc (atom first-alloc)
+        more-allocs? (atom true)
+        new-node? (atom true)
+        index (atom 0)
+
+        finish-fn (fn[] (swap! more-allocs? (fn[_]false)))
+        new-node-fn (fn[b] (swap! new-node? (fn[_]b)))
+
+        finish?-fn (fn[next-node]
+                     (if new-node?
+                       (finish-fn)
+                       (do
+                         (.remove cluster->cap next-node)
+                         (new-node-fn true))))
+
         ]
     (log-message "centroid:" centroid)
-    (log-message "queue:" (pr-str queue))
+    (log-message "queue:" (pr-str centroid-queue))
     (log-message "lcomp+rcomp->IPC:" @lcomp+rcomp->IPC)
 
+    (log-message "destinations:" (pr-str destinations))
     (log-message "initial-spread:" (pr-str initial-spread))
 
-    ;(while (.peek queue)
-    ;  (allocate-centroid allocator-data (.poll queue)))
+    (log-message "alloc:" (pr-str @best-alloc))
+
+    (while more-allocs?
+      (let [k (nth (keys @initial-spread) @index)
+
+            _ (log-message "alloc-centroid:k:" k " cur-spread:" (pr-str @cur-spread))
+            n-alloc (get @cur-spread k)
+            c-tasks (n-alloc centroid)
+            c-usage (task->usage (first c-tasks))
+
+            next-node (.top cluster->cap)
+            capacity (.find cluster->cap next-node)
+
+            next-tasks (or (get (get @cur-spread next-node) centroid) [])
+
+            cand-spread (apply merge
+                          {k (apply merge
+                               {centroid (subvec c-tasks 1)}
+                               (dissoc n-alloc centroid))}
+                          {next-node {centroid (conj next-tasks (first c-tasks))}}
+                          (dissoc @initial-spread k))
+
+            cand-destinations (apply merge
+                                {next-node (- capacity c-usage)}
+                                @destinations)
+
+            cand-alloc (when (and (> (count c-tasks) 1) (<= c-usage capacity))
+                         (calc-candidate-alloc allocator-data cand-spread
+                           cand-destinations (.clone centroid-queue) centroid))
+            ]
+        (log-message "cand-spread:" cand-spread)
+        (log-message "cand-des:" cand-destinations)
+        (log-message "cand-alloc:" cand-alloc)
+        ;(new-node-fn)
+        (if (> (count c-tasks) 1)
+          (if (<= c-usage capacity)
+            (do
+              (if (>= (nth cand-alloc 3) (nth @best-alloc 3))
+                (do
+                  (reset! best-alloc cand-alloc)
+                  (reset! cur-spread cand-spread)
+                  (when new-node? (new-node-fn false)))
+                (finish?-fn next-node)))
+            (finish?-fn next-node))
+          (if (<(inc @index)(count @initial-spread))
+            (swap! index inc)
+            (finish-fn)))
+        ))
     ))
 
 
