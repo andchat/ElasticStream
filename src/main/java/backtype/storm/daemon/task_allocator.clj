@@ -1121,6 +1121,19 @@
     true
     false))
 
+(defn mk-q []
+  (PriorityQueue.
+    1
+    (reify Comparator
+      (compare [this [k1 v1] [k2 v2]]
+        (cond
+          (< (- v2 v1) 0) -1
+          (> (- v2 v1) 0) 1
+          :else 0))
+      (equals [this obj]
+        true
+        ))))
+
 (defn get-comp-queue [comp lcomp+rcomp->IPC]
   (let [connected-v(filter #((complement nil?) %)
                      (map (fn [[[a b] ipc]]
@@ -1129,17 +1142,7 @@
                             (= b comp) [a ipc]
                             :else nil))
                      @lcomp+rcomp->IPC))
-        queue (PriorityQueue.
-                1
-                (reify Comparator
-                  (compare [this [k1 v1] [k2 v2]]
-                    (cond
-                    (< (- v2 v1) 0) -1
-                    (> (- v2 v1) 0) 1
-                    :else 0))
-                  (equals [this obj]
-                    true
-                    )))]
+        queue (mk-q)]
     (doall (map #(.offer queue %) connected-v))
     queue))
 
@@ -1288,9 +1291,63 @@
           (swap! res-des assoc-in [d-id] (@cand-des d-id))
           (swap! cand-des dissoc d-id)))
       ))
+    (doall
+      (map (fn[[k v]]
+             (swap! res-des assoc-in [k] v))
+        @cand-des))
+
       [@cand-alloc @res-des
        (alloc-ipc-gain allocator-data centroid @cand-alloc)]
     ))
+
+(defn apply-alloc [allocator-data cand-alloc cand-des]
+  (let [cluster->cap (:cluster->cap allocator-data)
+        component->task (:component->task allocator-data)
+        comp->cluster (:comp->cluster allocator-data)
+        cluster->comp (:cluster->comp allocator-data)
+
+        get-splits-fn (fn [[c t]]
+                        (let [all-t (@component->task c)]
+                          (if (< (count t)(count all-t))
+                            [[(str c ".1") t]
+                             [(str c ".2")(set/difference (set t)(set all-t))]]
+                            [])))
+
+        splits (map #(get-splits-fn %)
+                 (apply merge-with into (vals cand-alloc)))
+        ]
+    (doall
+      (map (fn[[k v]](.insert cluster->cap k v))
+        cand-des))
+
+    (log-message "apply-alloc:best:" (pr-str cand-alloc " " cand-des))
+    (log-message "apply-alloc:cluster:" (.toTree cluster->cap))
+    (log-message "apply-alloc:splits:" (pr-str splits))
+
+    (doall
+      (for [d (keys cand-alloc) t (apply concat (vals (cand-alloc d)))]
+        (do
+          (swap! comp->cluster assoc-in [t] d)
+          (swap! cluster->comp update-in [d] into [t]))))
+
+    (log-message "apply-alloc:comp->cluster:" (pr-str comp->cluster))
+    (log-message "apply-alloc:cluster->comp:" (pr-str cluster->comp))
+
+
+    ;(swap! splits assoc-in [to-split] [(str to-split ".1") (str to-split ".2")])
+    ;(swap! comp->root assoc-in [(str to-split ".1")] (@comp->root to-split))
+    ;(swap! comp->root assoc-in [(str to-split ".2")] (@comp->root to-split))
+
+    ;(swap! component->task assoc-in [(str to-split ".1")] s1)
+    ;(swap! component->task assoc-in [(str to-split ".2")] s2)
+
+    ;(swap! comp->usage update-in [(str to-split ".1")]
+    ;      (fn[a](get-split-usage s1 task->usage)))
+    ;(swap! comp->usage update-in [(str to-split ".2")]
+    ;      (fn[a](get-split-usage s2 task->usage)))
+
+  ))
+
 
 (defn allocate-centroid [allocator-data [centroid total-ipc]]
   (let [lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
@@ -1303,19 +1360,29 @@
         destinations (first ret)
         initial-spread (second ret)
         cur-spread (atom @initial-spread)
+    
+        clone-q-fn (fn [q]
+                     (let [q2 (mk-q)]
+                       (doall
+                         (map #(.offer q2 %) q))
+                       q2))
 
         first-alloc (calc-candidate-alloc allocator-data @initial-spread @destinations
-                      (.clone centroid-queue) centroid)
+                      (clone-q-fn centroid-queue) centroid)
 
         best-alloc (atom first-alloc)
         more-allocs? (atom true)
         new-node? (atom true)
         index (atom 0)
 
-        finish-fn (fn[] (swap! more-allocs? (fn[_]false)))
+        finish-fn (fn[]
+                    (log-message "more-allocs?:" @more-allocs?)
+                    (swap! more-allocs? (fn[_]false))
+                    (log-message "more-allocs?:" @more-allocs?))
         new-node-fn (fn[b] (swap! new-node? (fn[_]b)))
 
         finish?-fn (fn[next-node]
+                     (log-message "finish:" @new-node-fn)
                      (if new-node?
                        (finish-fn)
                        (do
@@ -1332,7 +1399,7 @@
 
     (log-message "alloc:" (pr-str @best-alloc))
 
-    (while more-allocs?
+    (while @more-allocs?
       (let [k (nth (keys @initial-spread) @index)
 
             _ (log-message "alloc-centroid:k:" k " cur-spread:" (pr-str @cur-spread))
@@ -1358,26 +1425,30 @@
 
             cand-alloc (when (and (> (count c-tasks) 1) (<= c-usage capacity))
                          (calc-candidate-alloc allocator-data cand-spread
-                           cand-destinations (.clone centroid-queue) centroid))
+                           cand-destinations (clone-q-fn centroid-queue) centroid))
             ]
         (log-message "cand-spread:" cand-spread)
         (log-message "cand-des:" cand-destinations)
         (log-message "cand-alloc:" cand-alloc)
+        (log-message "index:" @index)
         ;(new-node-fn)
         (if (> (count c-tasks) 1)
           (if (<= c-usage capacity)
             (do
-              (if (>= (nth cand-alloc 3) (nth @best-alloc 3))
+              (if (>= (nth cand-alloc 2) (nth @best-alloc 2))
                 (do
                   (reset! best-alloc cand-alloc)
                   (reset! cur-spread cand-spread)
-                  (when new-node? (new-node-fn false)))
+                  (when new-node? 
+                    (.remove cluster->cap next-node)
+                    (new-node-fn false)))
                 (finish?-fn next-node)))
             (finish?-fn next-node))
           (if (<(inc @index)(count @initial-spread))
             (swap! index inc)
             (finish-fn)))
         ))
+    (apply-alloc allocator-data (first @best-alloc) (second @best-alloc))
     ))
 
 
