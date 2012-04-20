@@ -1305,16 +1305,21 @@
         component->task (:component->task allocator-data)
         comp->cluster (:comp->cluster allocator-data)
         cluster->comp (:cluster->comp allocator-data)
+        comp->usage (:comp->usage allocator-data)
+        task->usage (:task->usage allocator-data)
+        splits (:splits allocator-data)
 
         get-splits-fn (fn [[c t]]
                         (let [all-t (@component->task c)]
                           (if (< (count t)(count all-t))
-                            [[(str c ".1") t]
-                             [(str c ".2")(set/difference (set t)(set all-t))]]
-                            [])))
+                            [[c (str c ".1") t]
+                             [c (str c ".2")(into [](set/difference (set all-t)(set t)))]]
+                            nil)))
 
-        splits (map #(get-splits-fn %)
-                 (apply merge-with into (vals cand-alloc)))
+        tmp-splits (reduce (fn [s a1]
+                             (let [spl (get-splits-fn a1)]
+                               (if spl (into s spl) s))) []
+            (apply merge-with into (vals cand-alloc)))
         ]
     (doall
       (map (fn[[k v]](.insert cluster->cap k v))
@@ -1322,30 +1327,40 @@
 
     (log-message "apply-alloc:best:" (pr-str cand-alloc " " cand-des))
     (log-message "apply-alloc:cluster:" (.toTree cluster->cap))
-    (log-message "apply-alloc:splits:" (pr-str splits))
+    (log-message "apply-alloc:tmp-splits:" (pr-str tmp-splits))
 
+    (doall
+      (for [s tmp-splits :let [to-split (nth s 0)
+                               split (nth s 1)
+                               ts (nth s 2)]]
+        (do
+          (when-not (contains? @splits to-split)
+            (swap! splits assoc-in [to-split]
+              [(str to-split ".1") (str to-split ".2")]))
+          (swap! component->task assoc-in [split] ts)
+          (swap! comp->usage update-in [split]
+            (fn[a](get-split-usage ts task->usage)))
+          )))
+
+    (log-message "apply-alloc:splits:" (pr-str @splits))
+    (log-message "apply-alloc:component->task:" (pr-str @component->task))
+    (log-message "apply-alloc:comp->usage:" (pr-str @comp->usage))
+    
     (doall
       (for [d (keys cand-alloc) t (apply concat (vals (cand-alloc d)))]
         (do
           (swap! comp->cluster assoc-in [t] d)
           (swap! cluster->comp update-in [d] into [t]))))
 
+    (doall
+      (for [c (keys (apply merge (vals cand-alloc)))]
+        (if-not (contains? @splits c)
+          (swap! comp->cluster assoc-in [(str "@" c)] 0)
+          (swap! comp->cluster assoc-in [(str "@" c ".1")] 0)
+        )))
+
     (log-message "apply-alloc:comp->cluster:" (pr-str comp->cluster))
     (log-message "apply-alloc:cluster->comp:" (pr-str cluster->comp))
-
-
-    ;(swap! splits assoc-in [to-split] [(str to-split ".1") (str to-split ".2")])
-    ;(swap! comp->root assoc-in [(str to-split ".1")] (@comp->root to-split))
-    ;(swap! comp->root assoc-in [(str to-split ".2")] (@comp->root to-split))
-
-    ;(swap! component->task assoc-in [(str to-split ".1")] s1)
-    ;(swap! component->task assoc-in [(str to-split ".2")] s2)
-
-    ;(swap! comp->usage update-in [(str to-split ".1")]
-    ;      (fn[a](get-split-usage s1 task->usage)))
-    ;(swap! comp->usage update-in [(str to-split ".2")]
-    ;      (fn[a](get-split-usage s2 task->usage)))
-
   ))
 
 
@@ -1375,20 +1390,15 @@
         new-node? (atom true)
         index (atom 0)
 
-        finish-fn (fn[]
-                    (log-message "more-allocs?:" @more-allocs?)
-                    (swap! more-allocs? (fn[_]false))
-                    (log-message "more-allocs?:" @more-allocs?))
+        finish-fn (fn[] (swap! more-allocs? (fn[_]false)))
         new-node-fn (fn[b] (swap! new-node? (fn[_]b)))
 
         finish?-fn (fn[next-node]
-                     (log-message "finish:" @new-node-fn)
-                     (if new-node?
+                     (log-message "finish:" @new-node?)
+                     (.remove cluster->cap next-node)
+                     (if @new-node?
                        (finish-fn)
-                       (do
-                         (.remove cluster->cap next-node)
-                         (new-node-fn true))))
-
+                       (new-node-fn true)))
         ]
     (log-message "centroid:" centroid)
     (log-message "queue:" (pr-str centroid-queue))
@@ -1402,26 +1412,34 @@
     (while @more-allocs?
       (let [k (nth (keys @initial-spread) @index)
 
-            _ (log-message "alloc-centroid:k:" k " cur-spread:" (pr-str @cur-spread))
             n-alloc (get @cur-spread k)
             c-tasks (n-alloc centroid)
             c-usage (task->usage (first c-tasks))
 
             next-node (.top cluster->cap)
-            capacity (.find cluster->cap next-node)
+            capacity (or (@destinations next-node) (.find cluster->cap next-node))
+            k-capacity (@destinations k)
 
             next-tasks (or (get (get @cur-spread next-node) centroid) [])
 
+            _ (log-message "alloc-centroid:k:" k " cur-spread:" 
+                (pr-str @cur-spread) " next-node:" next-node " next-tasks:" next-tasks
+                " n-alloc:" n-alloc " c-tasks:" c-tasks " capacity:" capacity
+                "k-capacity" k-capacity)
+            
             cand-spread (apply merge
                           {k (apply merge
                                {centroid (subvec c-tasks 1)}
                                (dissoc n-alloc centroid))}
-                          {next-node {centroid (conj next-tasks (first c-tasks))}}
-                          (dissoc @initial-spread k))
+                          {next-node (apply merge
+                               {centroid (conj next-tasks (first c-tasks))}
+                               (dissoc (get @cur-spread next-node) centroid))}
+                          (dissoc (dissoc @cur-spread k) next-node))
 
             cand-destinations (apply merge
                                 {next-node (- capacity c-usage)}
-                                @destinations)
+                                {k (+ k-capacity c-usage)}
+                                (dissoc (dissoc @destinations k) next-node))
 
             cand-alloc (when (and (> (count c-tasks) 1) (<= c-usage capacity))
                          (calc-candidate-alloc allocator-data cand-spread
@@ -1431,22 +1449,22 @@
         (log-message "cand-des:" cand-destinations)
         (log-message "cand-alloc:" cand-alloc)
         (log-message "index:" @index)
-        ;(new-node-fn)
+
         (if (> (count c-tasks) 1)
           (if (<= c-usage capacity)
-            (do
-              (if (>= (nth cand-alloc 2) (nth @best-alloc 2))
-                (do
-                  (reset! best-alloc cand-alloc)
-                  (reset! cur-spread cand-spread)
-                  (when new-node? 
-                    (.remove cluster->cap next-node)
-                    (new-node-fn false)))
-                (finish?-fn next-node)))
+            (if (>= (nth cand-alloc 2) (nth @best-alloc 2))
+              (do
+                (reset! best-alloc cand-alloc)
+                (reset! cur-spread cand-spread)
+                (reset! destinations cand-destinations)
+                (when new-node? (new-node-fn false)))
+              (finish?-fn next-node))
             (finish?-fn next-node))
           (if (<(inc @index)(count @initial-spread))
             (swap! index inc)
-            (finish-fn)))
+            (do
+              (finish-fn)
+              (.remove cluster->cap next-node))))
         ))
     (apply-alloc allocator-data (first @best-alloc) (second @best-alloc))
     ))
