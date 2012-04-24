@@ -670,19 +670,19 @@
 
         connected-v(filter #((complement nil?) %)
                      (map (fn [[[a b] ipc]]
-                            (cond
-                              (= a comp) [b ipc]
-                              (= b comp) [a ipc]
-                              :else nil))
+                            (let [a (resolve-split a @splits)
+                                  b (resolve-split b @splits)]
+                              (cond
+                                (= a comp) [b ipc]
+                                (= b comp) [a ipc]
+                                :else nil)))
                        to-queue-comp))
         
         connected-v2(filter #((complement nil?) %)
-                     (map (fn [[v ipc]]
-                            (let [v (if (contains? @splits v)
-                                      (str v ".2") v)]
-                              (if-not (contains? @comp->cluster (str "@" v))
-                                [v ipc] nil)))
-                       connected-v))
+                      (map (fn [[v ipc]]
+                             (if-not (contains? @comp->cluster (str "@" v))
+                               [v ipc] nil))
+                        connected-v))
 
         queue (mk-q)]
     (doall (map #(.offer queue %) connected-v2))
@@ -690,8 +690,6 @@
 
 (defn calc-initial-spread [allocator-data left [right ipc]]
   (let [component->task (:component->task allocator-data)
-        comp->usage (:comp->usage allocator-data)
-
         task->usage (:task->usage allocator-data)
         cluster->cap (:cluster->cap allocator-data)
 
@@ -778,12 +776,12 @@
           (swap! cand-des update-in [d-id] (fn[_] (- d-cap (* t-fit next-usage))))
           (reset! assigned [next-v (+ cnt t-fit)]))
 
-      (log-message "cand-alloc: d1:" d-id" d2:" d-cap)
-      (log-message "cand-alloc: nv:" next-v " nt:" next-t " nu:" next-usage)
-      (log-message "cand-alloc:alloc:" @cand-alloc)
-      (log-message "cand-alloc:des:" @cand-des)
-      (log-message "cand-alloc:assigned:" @assigned)
-      (log-message "cand-alloc**********************")
+      ;(log-message "cand-alloc: d1:" d-id" d2:" d-cap)
+      ;(log-message "cand-alloc: nv:" next-v " nt:" next-t " nu:" next-usage)
+      ;(log-message "cand-alloc:alloc:" @cand-alloc)
+      ;(log-message "cand-alloc:des:" @cand-des)
+      ;(log-message "cand-alloc:assigned:" @assigned)
+      ;(log-message "cand-alloc**********************")
 
       (if (= (+ cnt t-fit) (count next-t))
         (.poll centroid-queue)
@@ -988,17 +986,26 @@
         lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
         unlinked-tasks (:unlinked-tasks allocator-data)
         cluster->comp (:cluster->comp allocator-data)
+        splits (:splits allocator-data)
         destination (atom -1)
         last-comp-pair (atom [])
 
-         ;comp->IPC (apply merge-with +
+        comp->IPC (apply merge-with +
+                    (map (fn [[[a b] ipc]] {a ipc, b ipc})
+                      to-queue-comp))
+
+        comp->IPC-2 (apply merge-with (fn [a b] (max a b))
+                      (map (fn [[[a b] ipc]]
+                             (if (>(comp->IPC a)(comp->IPC a))
+                               {a ipc}{b ipc}))
+                        to-queue-comp))
+
+         ;comp->IPC (apply merge-with (fn [a b] (max a b))
          ;           (map (fn [[[a b] ipc]] {a ipc, b ipc})
          ;             to-queue-comp))
-         comp->IPC (apply merge-with (fn [a b] (max a b))
-                    (map (fn [[[a b] ipc]] {a ipc, b ipc})
-                      to-queue-comp))]
+        ]
     (when (> (count task->usage) 0)
-      (doall (map #(.offer queue %) comp->IPC))
+      (doall (map #(.offer queue %) to-queue-comp))
 
       (setup-clusters allocator-data) ; linear
 
@@ -1011,16 +1018,38 @@
       (log-message "task->usage:" (pr-str (:task->usage allocator-data)))
       (log-message "ltask+rtask->IPC:" (pr-str (:ltask+rtask->IPC allocator-data)))
       (log-message "lcomp+rcomp->IPC:" (pr-str (:lcomp+rcomp->IPC allocator-data)))
+      (log-message "centroid-queue:" (pr-str queue))
       (log-message "to-queue-comp:" (pr-str to-queue-comp))
       (log-message "unlinked-tasks:" (pr-str (:unlinked-tasks allocator-data)))
 
-      (while (.peek queue)
-        (let [centroid (first (.poll queue))
-              centroid-queue (get-comp-queue allocator-data centroid)]
-          (when (and (> (count centroid-queue) 0)
-                  ((complement contains?) @comp->cluster (str "@" centroid)))
-            (allocate-centroid allocator-data centroid centroid-queue))))
+      ;(while (.peek queue)
+      ;  (let [centroid (first (.poll queue))
+      ;        centroid-queue (get-comp-queue allocator-data centroid)]
+      ;    (when (and (> (count centroid-queue) 0)
+      ;            ((complement contains?) @comp->cluster (str "@" centroid)))
+      ;      (allocate-centroid allocator-data centroid centroid-queue))))
 
+      (while (.peek queue)
+        (let [pair (first (.poll queue))
+              l-root (first pair)
+              r-root (second pair)
+              l (resolve-split l-root @splits)
+              r (resolve-split r-root @splits)
+
+              l? ((complement contains?) @comp->cluster (str "@" l))
+              r? ((complement contains?) @comp->cluster (str "@" r))
+
+              centroid (cond
+                         (and l? r?) (if (>(comp->IPC l-root)(comp->IPC r-root)) l r)
+                         l? l
+                         r? r
+                         :else nil)
+
+              centroid-queue (when centroid 
+                               (get-comp-queue allocator-data centroid))]
+          (when (and centroid (> (count centroid-queue) 0))
+            (allocate-centroid allocator-data centroid centroid-queue))))
+      
       (reset! unlinked-tasks 
         (set/difference
           (set (keys task->usage))
@@ -1047,7 +1076,7 @@
         ;                   (map (fn[[a1 a2]] a2)
         ;                     (vals supervisor-ids->task-usage)));linear
 
-        load-con 1.04
+        load-con 0.4
         available-nodes 10
 task->component {32 3, 64 6, 96 9, 33 3, 65 6, 97 9, 34 3, 66 6, 98 9, 67 6, 99 9, 68 6, 71 7, 72 7, 41 4, 73 7, 42 4, 74 7, 11 1, 43 4, 75 7, 12 1, 44 4, 76 7, 13 1, 45 4, 77 7, 14 1, 46 4, 78 7, 15 1, 47 4, 16 1, 48 4, 49 4, 81 8, 82 8, 51 5, 83 8, 52 5, 84 8, 21 2, 53 5, 85 8, 22 2, 54 5, 86 8, 23 2, 55 5, 87 8, 24 2, 56 5, 88 8, 25 2, 57 5, 89 8, 26 2, 58 5, 91 9, 92 9, 61 6, 93 9, 62 6, 94 9, 31 3, 63 6, 95 9}
 task->usage {32 17.5, 64 10.0, 96 1.1111112, 33 17.5, 65 10.0, 97 1.1111112, 34 17.5, 66 10.0, 98 1.1111112, 67 10.0, 99 1.1111112, 68 10.0, 71 2.5, 72 2.5, 41 3.3333333, 73 2.5, 42 3.3333333, 74 2.5, 11 1.6666666, 43 3.3333333, 75 2.5, 12 1.6666666, 44 3.3333333, 76 2.5, 13 1.6666666, 45 3.3333333, 77 2.5, 14 1.6666666, 46 3.3333333, 78 2.5, 15 1.6666666, 47 3.3333333, 16 1.6666666, 48 3.3333333, 49 3.3333333, 81 2.2222223, 82 2.2222223, 51 8.75, 83 2.2222223, 52 8.75, 84 2.2222223, 21 5.0, 53 8.75, 85 2.2222223, 22 5.0, 54 8.75, 86 2.2222223, 23 5.0, 55 8.75, 87 2.2222223, 24 5.0, 56 8.75, 88 2.2222223, 25 5.0, 57 8.75, 89 2.2222223, 26 5.0, 58 8.75, 91 1.1111112, 92 1.1111112, 61 10.0, 93 1.1111112, 62 10.0, 94 1.1111112, 31 17.5, 63 10.0, 95 1.1111112}
