@@ -988,25 +988,10 @@
         cluster->comp (:cluster->comp allocator-data)
         splits (:splits allocator-data)
         destination (atom -1)
-        last-comp-pair (atom [])
-
-        comp->IPC (apply merge-with +
-                    (map (fn [[[a b] ipc]]
-                             {a ipc, b ipc})
-                      to-queue-comp))
-
-        ;comp->IPC-2 (apply merge-with (fn [a b] (max a b))
-        ;              (map (fn [[[a b] ipc]]
-        ;                     (if (>(comp->IPC a)(comp->IPC a))
-        ;                       {a ipc}{b ipc}))
-        ;                to-queue-comp))
-
-         ;comp->IPC (apply merge-with (fn [a b] (max a b))
-         ;           (map (fn [[[a b] ipc]] {a ipc, b ipc})
-         ;             to-queue-comp))
+        last-comp-pair (atom []) 
         ]
     (when (> (count task->usage) 0)
-      (doall (map #(.offer queue %) comp->IPC))
+      (doall (map #(.offer queue %) to-queue-comp))
 
       (setup-clusters allocator-data) ; linear
 
