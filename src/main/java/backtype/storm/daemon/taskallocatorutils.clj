@@ -160,7 +160,7 @@
         ( >= capacity total-usage)))
     ))
 
-(defn calc-splits [allocator-data destination l-tasks r-tasks]
+(defn calc-splits! [allocator-data destination l-tasks r-tasks]
   (let [task->usage (:task->usage allocator-data)
         cluster->cap (:cluster->cap allocator-data)
         capacity (.find cluster->cap destination)
@@ -226,6 +226,28 @@
     ;(log-message "split: Capl " cap-left2)
 
     {:left [s1-left s2-left], :right [s1-right s2-right]}
+    ))
+
+(defn calc-splits [allocator-data destination l-tasks r-tasks]
+  (let [task->usage (:task->usage allocator-data)
+        cluster->cap (:cluster->cap allocator-data)
+        cap (.find cluster->cap destination)
+
+        l-usage (task->usage (first l-tasks))
+        r-usage (task->usage (first r-tasks))
+
+        fit-fn (fn[usage tasks]
+                 (min
+                   (floor (float (/ cap usage)))
+                   (count tasks)))]
+    (cond
+      (and (= (count l-tasks) 0)(= (count r-tasks) 0))
+        {:left [[] []], :right [[] []]}
+      (= (count l-tasks) 0)
+        {:left [[] []], :right [(subvec r-tasks 0 (fit-fn r-usage r-tasks)) (subvec r-tasks (fit-fn r-usage r-tasks))]}
+      (= (count r-tasks) 0)
+        {:left [(subvec l-tasks 0 (fit-fn l-usage l-tasks)) (subvec l-tasks (fit-fn l-usage l-tasks))], :right [[] []]}
+      :else (calc-splits! allocator-data destination l-tasks r-tasks))
     ))
 
 ; constant (the splits are always 2)
@@ -473,20 +495,21 @@
   (let [component->task (:component->task allocator-data)
         lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
         comp->root (:comp->root allocator-data)
- 
+
         c-t-cnt (count (alloc centroid))
-        total-c (count (@component->task centroid))
+        centroid-root (@comp->root centroid)
+        total-c (count (@component->task centroid-root))
 
         alloc (dissoc alloc centroid)]
     (reduce +
       (for [a alloc
             :let [k (first a)]
             :let [r-t-cnt (count (second a))]
-            :let [total-r (count (@component->task k))]
             :let [k-root (@comp->root k)]
+            :let [total-r (count (@component->task k-root))]
             :let [ipc (or
-                        (@lcomp+rcomp->IPC [centroid k-root])
-                        (@lcomp+rcomp->IPC [k-root centroid]))]
+                        (@lcomp+rcomp->IPC [centroid-root k-root])
+                        (@lcomp+rcomp->IPC [k-root centroid-root]))]
             ]
         (if (or (= c-t-cnt 0) (= r-t-cnt 0))
           0
@@ -502,3 +525,9 @@
   (reduce +
     (map #(node-ipc-gain allocator-data centroid %)
       (vals alloc))))
+
+(defn resolve-split [split splits]
+  (loop [s split]
+    (if-not (contains? splits s)
+      s
+      (recur (str s ".2")))))
