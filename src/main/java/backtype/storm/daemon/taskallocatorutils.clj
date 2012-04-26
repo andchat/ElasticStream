@@ -216,8 +216,6 @@
         s1-right (if is-l-smaller l-s1 s-s1)
         s2-right (if is-l-smaller l-s2 s-s2)]
 
-    (log-message "split: s-tasks " s-tasks " s-usage " s-usage)
-    (log-message "split: l-tasks " l-tasks " l-usage " l-usage)
     (log-message "split: l-prop " l-prop)
     (log-message "split: MBS-usage " MBS-usage)
     (log-message "split: Cap " capacity " fit " MBS-fit-cnt)
@@ -511,14 +509,19 @@
                         (@lcomp+rcomp->IPC [centroid-root k-root])
                         (@lcomp+rcomp->IPC [k-root centroid-root]))]
             ]
-        (if (or (= c-t-cnt 0) (= r-t-cnt 0))
-          0
-          (do
-            (-> (/ ipc (* total-r total-c))
-              (* c-t-cnt)
-              (* r-t-cnt))
-            ))
-        ))
+        (do
+          ;(log-message "node-ipc-gain: k:" k" r-t-cnt:" r-t-cnt " k-root:" k-root
+          ;  " total-r:" total-r " ipc:" ipc)
+          (if-not (nil? ipc)
+            (if (or (= c-t-cnt 0) (= r-t-cnt 0))
+              0
+              (do
+                (-> (/ ipc (* total-r total-c))
+                  (* c-t-cnt)
+                  (* r-t-cnt))
+                ))
+            0)
+          )))
     ))
 
 (defn alloc-ipc-gain [allocator-data centroid alloc]

@@ -1,6 +1,8 @@
 (ns backtype.storm.log
   (:require [clojure.contrib [logging :as log]]))
 
+;(defmacro log-message [& args]
+;  `(print (str ~@args "\n")))
 (defmacro log-message [& args]
   `(log/info (str ~@args)))
 

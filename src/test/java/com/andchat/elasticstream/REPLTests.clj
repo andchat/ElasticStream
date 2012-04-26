@@ -71,9 +71,9 @@
 (defn test-alloc-multi [task->component task->usage ltask+rtask->IPC load-con end-con available-nodes]
   (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
     (.write wrtr (str "load-constraint TD-2 Simple-2 Centroid TD Simple TD-imp Best \n"))
-    (doall
+    (dorun
       (for [l (range (* load-con 100) (+ end-con 2) 2)
-            :let [l-dec (float (/ l 100))]
+            :let [l-dec (double (/ l 100))]
             :let [alloc-1 (allocator-alg1 task->component
                             task->usage ltask+rtask->IPC l-dec available-nodes
                             :IPC-over-PC? true)]
@@ -91,44 +91,46 @@
             :let [alloc-9 (allocator-alg3 task->component
                             task->usage ltask+rtask->IPC l-dec available-nodes
                             )]
-            :let [alloc-5 (allocator-alg1 task->component
-                            task->usage ltask+rtask->IPC l-dec available-nodes
-                            )]
-            :let [alloc-6 (allocator-alg1 task->component
-                            task->usage ltask+rtask->IPC l-dec available-nodes
-                            :best-split-enabled? true)]
-            :let [alloc-7 (allocator-alg1 task->component
-                            task->usage ltask+rtask->IPC l-dec available-nodes
-                            :best-split-enabled? true :linear-edge-update? true
-                            )]
-            :let [alloc-8 (allocator-alg2 task->component
-                            task->usage ltask+rtask->IPC l-dec available-nodes
-                            )]
+            ;:let [alloc-5 (allocator-alg1 task->component
+            ;                task->usage ltask+rtask->IPC l-dec available-nodes
+            ;                )]
+            ;:let [alloc-6 (allocator-alg1 task->component
+            ;                task->usage ltask+rtask->IPC l-dec available-nodes
+            ;                :best-split-enabled? true)]
+            ;:let [alloc-7 (allocator-alg1 task->component
+            ;                task->usage ltask+rtask->IPC l-dec available-nodes
+            ;                :best-split-enabled? true :linear-edge-update? true
+            ;                )]
+            ;:let [alloc-8 (allocator-alg2 task->component
+            ;                task->usage ltask+rtask->IPC l-dec available-nodes
+            ;                )]
             :let [best (if (and (<= (count task->usage) 12) (<= available-nodes 3))
                          (max-IPC-gain task->usage ltask+rtask->IPC (int (* l-dec 100)))
                          [0])]]
-        (.write wrtr 
-          (str l-dec " "
-            (evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
-            ;(evaluate-alloc (first alloc-3) ltask+rtask->IPC) " "
-            (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
-            (evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
-            (evaluate-alloc (first alloc-5) ltask+rtask->IPC) " "
-            (evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
-            (evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
-            (evaluate-alloc (first alloc-7) ltask+rtask->IPC) " "
-            (first best) " "
-            ;(evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
-            (count (apply concat (vals (first alloc-1)))) " "
-            ;(count (apply concat (vals (first alloc-3)))) " "
-            (count (apply concat (vals (first alloc-4)))) " "
-            (count (apply concat (vals (first alloc-9)))) " "
-            (count (apply concat (vals (first alloc-5)))) " "
-            ;(count (apply concat (vals (first alloc-7)))) " "
-            (count (apply concat (vals (first alloc-8)))) " "
-            ;(count (apply concat (vals (first alloc-2)))) " "
-            (count (apply concat (vals (first alloc-7)))) " "
-            "\n"))
+        (do
+          (print "lc:" l-dec ",")
+          (.write wrtr
+            (str l-dec " "
+              (evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-3) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-5) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-7) ltask+rtask->IPC) " "
+              (first best) " "
+              ;(evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
+              (count (apply concat (vals (first alloc-1)))) " "
+              ;(count (apply concat (vals (first alloc-3)))) " "
+              (count (apply concat (vals (first alloc-4)))) " "
+              (count (apply concat (vals (first alloc-9)))) " "
+              ;(count (apply concat (vals (first alloc-5)))) " "
+              ;(count (apply concat (vals (first alloc-7)))) " "
+              ;(count (apply concat (vals (first alloc-8)))) " "
+              ;(count (apply concat (vals (first alloc-2)))) " "
+              ;(count (apply concat (vals (first alloc-7)))) " "
+              "\n")))
         )))
   1)
  
@@ -138,14 +140,13 @@ comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34],
             4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58],
             6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78],
             8 [81 82 83 84 85 86 87 88 89], 9 [91 92 93 94 95 96 97 98 99]}
-comp->usage {1 10, 2 30, 3 70, 4 30, 5 70, 6 80, 7 20, 8 20, 9 10}
-comp->IPC {[1 3] 700, [2 3] 1300, [4 6] 1000, [5 6] 200, [3 7] 600, [6 7] 1400,
-           [1 8] 1000, [2 8] 200, [8 9] 600, [4 9] 1200}
+comp->usage {1 10, 2 50, 3 70, 4 30, 5 50, 6 80, 7 20, 8 20, 9 10}
+comp->IPC {[1 3] 700, [2 3] 300, [4 6] 1200, [5 6] 700, [3 7] 1100, [6 7] 1400,
+           [1 8] 800, [2 8] 200, [8 9] 1400, [4 9] 800}
 
-        ; test
-        ;comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58], 6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78]}
-        ;comp->usage {1 15, 2 25, 3 80, 4 10, 5 30, 6 50, 7 30}
-        ;comp->IPC {[1 3] 700, [2 3] 300, [4 6] 1000, [5 6] 200, [3 7] 1600, [6 7] 1400}
+;comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34 35 36], 4 [41 42 43 44 45 46]}
+;comp->usage {1 20, 2 30, 3 20, 4 40}
+;comp->IPC {[1 3] 2700, [2 3] 2600, [3 4] 2000}
         
         task->component (apply merge
                           (for [ct comp->task t (second ct)]
