@@ -196,15 +196,33 @@
 
         ;stage 3 - Tasks
         ;l-usage (if (< s-usage l-usage) s-usage l-usage)
-        add-l (min
-                (floor (float (/ cap-left l-usage)))
+        cap-left2 cap-left
+
+        add-l1 (min
+                (floor (float (/ cap-left2 l-usage)))
                 l-t-left)
 
-        cap-left (- cap-left (* l-usage add-l))
+        cap-left2 (- cap-left2 (* l-usage add-l1))
 
-        add-s (min
-                (floor (float (/ cap-left s-usage)))
+        add-s1 (min
+                (floor (float (/ cap-left2 s-usage)))
                 s-t-left)
+
+        
+        cap-left2 cap-left
+
+        add-s2 (min
+                 (floor (float (/ cap-left2 s-usage)))
+                 s-t-left)
+
+        cap-left2 (- cap-left2 (* s-usage add-s2))
+
+        add-l2 (min
+                 (floor (float (/ cap-left2 l-usage)))
+                 l-t-left)
+
+        add-s (if (>=(+ add-s1 add-l1)(+ add-s2 add-l2)) add-s1 add-s2)
+        add-l (if (>=(+ add-s1 add-l1)(+ add-s2 add-l2)) add-l1 add-l2)
 
         s-s1 (subvec s-tasks 0 (+ MBS-fit-cnt pair-fit-cnt add-s))
         s-s2 (subvec s-tasks (+ MBS-fit-cnt pair-fit-cnt add-s))

@@ -933,9 +933,10 @@
         allocation (:allocation allocator-data)
 
         ;ret (calc-initial-spread allocator-data centroid (.poll centroid-queue))
+        clusters (@comp->cluster (str "@" centroid))
         destinations (atom (apply merge
                              (doall
-                               (for [d (@comp->cluster (str "@" centroid))
+                               (for [d clusters
                                      :let [cap (.find cluster->cap d)]]
                                  (do
                                    (.remove cluster->cap d)
@@ -944,7 +945,7 @@
 
         initial-spread (apply merge
                          (doall
-                           (for [d (@comp->cluster (str "@" centroid))]
+                           (for [d clusters]
                              {d (@allocation d)}
                              )))
         cur-spread (atom initial-spread)
@@ -954,19 +955,31 @@
 
         best-alloc (atom first-alloc)
         more-allocs? (atom true)
-        new-node? (atom true)
+
+        last-des (last (keys initial-spread))
+        last-des? (atom (if (>(count clusters) 1) true false))
+        ;last-des? false
+        new-node? (atom (if @last-des? false true))
+        ;spread-cnt (count initial-spread)
+        spread-cnt (if @last-des?
+                     (dec (count initial-spread))
+                     (count initial-spread))
+        
         index (atom 0)
 
         finish-fn (fn[] (swap! more-allocs? (fn[_]false)))
         new-node-fn (fn[b] (swap! new-node? (fn[_]b)))
+        last-des?-fn (fn[b] (swap! last-des? (fn[_]b)))
 
         finish?-fn (fn[next-node]
                      (log-message "finish:" @new-node?)
                      (if @new-node?
                        (finish-fn)
                        (do
-                         (.remove cluster->cap next-node)
-                         (new-node-fn true))))
+                         (new-node-fn true)
+                         (if @last-des?
+                           (last-des?-fn false)
+                           (.remove cluster->cap next-node)))))
         ]
     (log-message "centroid:" centroid)
     (log-message "vertex:" vertex)
@@ -977,6 +990,9 @@
 
     (log-message "alloc:" (pr-str @best-alloc))
 
+;    (print "lala:" last-des "\n")
+;    (print "lala:" (pr-str initial-spread) "\n")
+;    (print "lala:" (pr-str destinations) "\n")
     (while @more-allocs?
       (let [k (nth (keys initial-spread) @index)
 
@@ -984,7 +1000,9 @@
             c-tasks (n-alloc centroid)
             c-usage (task->usage (first c-tasks))
 
-            next-node (.top cluster->cap)
+            next-node (if @last-des? last-des (.top cluster->cap))
+            ;_ (last-des?-fn false)
+            
             capacity (or (@destinations next-node) (.find cluster->cap next-node))
             k-capacity (@destinations k)
 
@@ -1015,16 +1033,24 @@
                          (calc-candidate-alloc allocator-data cand-spread
                            cand-destinations centroid vertex))
             ]
-        (log-message "cand-spread:" cand-spread)
-        (log-message "cand-des:" cand-destinations)
-        (log-message "cand-alloc:" cand-alloc)
-        (log-message "index:" @index)
+        ;(print "---------------------------------\n")
+        ;(print "initial-spread:" initial-spread "\n")
+        ;(print "cand-spread:" cand-spread "\n")
+        ;(print "cand-des:" cand-destinations "\n")
+        ;(print "next-node:" next-node "\n")
+        ;(print "cand-alloc:" cand-alloc "\n")
+        ;(print "index:" @index "\n")
+        ;(print "last-des?:" @last-des? "\n")
+        ;(print "new-node?:" @new-node? "\n")
+        ;(print "n-alloc:" n-alloc "\n")
+        ;(print "c-tasks:" c-tasks "\n")
+        ;(print "spread-cnt:" spread-cnt "\n")
 
         (if (> (count c-tasks) 1)
           (if (<= c-usage capacity)
             (if (> (nth cand-alloc 2) (nth @best-alloc 2))
               (do
-                (print "\n worked:" (pr-str cand-alloc) "\n " (pr-str @best-alloc) "\n")
+                ;(print "\n worked:" (pr-str cand-alloc) "\n " (pr-str @best-alloc) "\n")
                 (reset! best-alloc cand-alloc)
                 (reset! cur-spread cand-spread)
                 (reset! destinations cand-destinations)
@@ -1032,7 +1058,7 @@
                   (new-node-fn false)))
               (finish?-fn next-node))
             (finish?-fn next-node))
-          (if (<(inc @index)(count initial-spread))
+          (if (<(inc @index) spread-cnt)
             (swap! index inc)
             (do
               (finish-fn)
@@ -1128,11 +1154,11 @@
         ;                   (map (fn[[a1 a2]] a2)
         ;                     (vals supervisor-ids->task-usage)));linear
 
-        load-con 0.62
+        load-con 0.12
         available-nodes 10
-task->component {32 3, 33 3, 34 3, 35 3, 36 3, 41 4, 42 4, 11 1, 43 4, 12 1, 44 4, 13 1, 45 4, 14 1, 46 4, 15 1, 16 1, 21 2, 22 2, 23 2, 24 2, 25 2, 26 2, 31 3}
-task->usage {32 3.3333333, 33 3.3333333, 34 3.3333333, 35 3.3333333, 36 3.3333333, 41 6.6666665, 42 6.6666665, 11 3.3333333, 43 6.6666665, 12 3.3333333, 44 6.6666665, 13 3.3333333, 45 6.6666665, 14 3.3333333, 46 6.6666665, 15 3.3333333, 16 3.3333333, 21 5.0, 22 5.0, 23 5.0, 24 5.0, 25 5.0, 26 5.0, 31 3.3333333}
-ltask+rtask->IPC {[36 41] 69.44444, [16 21] 75.0, [26 31] 72.22222, [35 41] 69.44444, [36 42] 69.44444, [15 21] 75.0, [16 22] 75.0, [25 31] 72.22222, [26 32] 72.22222, [34 41] 69.44444, [35 42] 69.44444, [36 43] 69.44444, [14 21] 75.0, [15 22] 75.0, [16 23] 75.0, [24 31] 72.22222, [25 32] 72.22222, [26 33] 72.22222, [34 42] 69.44444, [35 43] 69.44444, [36 44] 69.44444, [13 21] 75.0, [14 22] 75.0, [15 23] 75.0, [16 24] 75.0, [23 31] 72.22222, [24 32] 72.22222, [25 33] 72.22222, [26 34] 72.22222, [33 41] 69.44444, [34 43] 69.44444, [35 44] 69.44444, [36 45] 69.44444, [12 21] 75.0, [13 22] 75.0, [14 23] 75.0, [15 24] 75.0, [16 25] 75.0, [22 31] 72.22222, [23 32] 72.22222, [24 33] 72.22222, [25 34] 72.22222, [26 35] 72.22222, [32 41] 69.44444, [33 42] 69.44444, [34 44] 69.44444, [35 45] 69.44444, [36 46] 69.44444, [11 21] 75.0, [12 22] 75.0, [13 23] 75.0, [14 24] 75.0, [15 25] 75.0, [16 26] 75.0, [21 31] 72.22222, [22 32] 72.22222, [23 33] 72.22222, [24 34] 72.22222, [25 35] 72.22222, [26 36] 72.22222, [31 41] 69.44444, [32 42] 69.44444, [33 43] 69.44444, [34 45] 69.44444, [35 46] 69.44444, [11 22] 75.0, [12 23] 75.0, [13 24] 75.0, [14 25] 75.0, [15 26] 75.0, [21 32] 72.22222, [22 33] 72.22222, [23 34] 72.22222, [24 35] 72.22222, [25 36] 72.22222, [31 42] 69.44444, [32 43] 69.44444, [33 44] 69.44444, [34 46] 69.44444, [11 23] 75.0, [12 24] 75.0, [13 25] 75.0, [14 26] 75.0, [21 33] 72.22222, [22 34] 72.22222, [23 35] 72.22222, [24 36] 72.22222, [31 43] 69.44444, [32 44] 69.44444, [33 45] 69.44444, [11 24] 75.0, [12 25] 75.0, [13 26] 75.0, [21 34] 72.22222, [22 35] 72.22222, [23 36] 72.22222, [31 44] 69.44444, [32 45] 69.44444, [33 46] 69.44444, [11 25] 75.0, [12 26] 75.0, [21 35] 72.22222, [22 36] 72.22222, [31 45] 69.44444, [32 46] 69.44444, [11 26] 75.0, [21 36] 72.22222, [31 46] 69.44444}
+task->component {32 3, 33 3, 34 3, 35 3, 36 3, 11 1, 12 1, 13 1, 14 1, 15 1, 16 1, 21 2, 22 2, 23 2, 24 2, 25 2, 26 2, 31 3}
+task->usage {32 3.3333333, 33 3.3333333, 34 3.3333333, 35 3.3333333, 36 3.3333333, 11 3.3333333, 12 3.3333333, 13 3.3333333, 14 3.3333333, 15 3.3333333, 16 3.3333333, 21 5.0, 22 5.0, 23 5.0, 24 5.0, 25 5.0, 26 5.0, 31 3.3333333}
+ltask+rtask->IPC {[16 21] 75.0, [15 21] 75.0, [16 22] 75.0, [14 21] 75.0, [15 22] 75.0, [16 23] 75.0, [13 21] 75.0, [14 22] 75.0, [15 23] 75.0, [16 24] 75.0, [12 21] 75.0, [13 22] 75.0, [14 23] 75.0, [15 24] 75.0, [16 25] 75.0, [11 21] 75.0, [12 22] 75.0, [13 23] 75.0, [14 24] 75.0, [15 25] 75.0, [16 26] 75.0, [11 22] 75.0, [12 23] 75.0, [13 24] 75.0, [14 25] 75.0, [15 26] 75.0, [11 23] 75.0, [12 24] 75.0, [13 25] 75.0, [14 26] 75.0, [11 24] 75.0, [12 25] 75.0, [13 26] 75.0, [11 25] 75.0, [12 26] 75.0, [11 26] 75.0, [36 21] 72.22222, [35 21] 72.22222, [36 22] 72.22222, [35 22] 72.22222, [36 23] 72.22222, [34 21] 72.22222, [35 23] 72.22222, [36 24] 72.22222, [33 21] 72.22222, [34 22] 72.22222, [35 24] 72.22222, [36 25] 72.22222, [32 21] 72.22222, [33 22] 72.22222, [34 23] 72.22222, [35 25] 72.22222, [36 26] 72.22222, [31 21] 72.22222, [32 22] 72.22222, [33 23] 72.22222, [34 24] 72.22222, [35 26] 72.22222, [31 22] 72.22222, [32 23] 72.22222, [33 24] 72.22222, [34 25] 72.22222, [31 23] 72.22222, [32 24] 72.22222, [33 25] 72.22222, [34 26] 72.22222, [31 24] 72.22222, [32 25] 72.22222, [33 26] 72.22222, [31 25] 72.22222, [32 26] 72.22222, [31 26] 72.22222}
         
         alloc-1 (allocator-alg1 task->component
                   task->usage ltask+rtask->IPC load-con available-nodes
@@ -1145,9 +1171,9 @@ ltask+rtask->IPC {[36 41] 69.44444, [16 21] 75.0, [26 31] 72.22222, [35 41] 69.4
         ;          task->usage ltask+rtask->IPC load-con available-nodes
         ;          :best-split-enabled? true :linear-edge-update? true
         ;          :IPC-over-PC? true)
-        ;alloc-4 (allocator-alg2 task->component
-        ;          task->usage ltask+rtask->IPC load-con available-nodes
-        ;          :IPC-over-PC? true)
+        alloc-4 (allocator-alg2 task->component
+                  task->usage ltask+rtask->IPC load-con available-nodes
+                  :IPC-over-PC? true)
         alloc-5 (allocator-alg3 task->component
                   task->usage ltask+rtask->IPC load-con available-nodes)
         ]
@@ -1165,9 +1191,9 @@ ltask+rtask->IPC {[36 41] 69.44444, [16 21] 75.0, [26 31] 72.22222, [35 41] 69.4
       ;(log-message "Allocation 3 IPC gain:"
       ;  (evaluate-alloc (first alloc-3) ltask+rtask->IPC))
 
-      ;(log-message "@@Allocation 4:" (pr-str alloc-4))
-      ;(log-message "@@Allocation 4 IPC gain:"
-      ;  (evaluate-alloc (first alloc-4) ltask+rtask->IPC))
+      (log-message "@@Allocation 4:" (pr-str alloc-4))
+      (log-message "@@Allocation 4 IPC gain:"
+        (evaluate-alloc (first alloc-4) ltask+rtask->IPC))
 
       (log-message "@@Allocation 5:" (pr-str alloc-5))
       (log-message "@@Allocation 5 IPC gain:"
