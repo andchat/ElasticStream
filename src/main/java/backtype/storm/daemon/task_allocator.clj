@@ -1009,8 +1009,8 @@
         prop (if (and total-ipc cur-ipc)
                (float (/ total-ipc cur-ipc))
                1000)
-        ;spread? (<= prop 0.05)
-        spread? true
+        spread? (<= prop 0.05)
+        ;spread? false
         ]
     ;(print "centroid:" centroid "\n")
     ;(print "vertex:" vertex "\n")
@@ -1145,15 +1145,18 @@
 
       (print (pr-str queue) "\n")
       (while (.peek queue)
-        (let [pair (first (.poll queue))
-              l-root (first pair)
-              r-root (second pair)
-              l (resolve-split l-root @splits)
-              r (resolve-split r-root @splits)
+        (let [entry (.poll queue)
+              pair (first entry)
+              IPC (second entry)
+              l (first pair)
+              r (second pair)
+              ;l (resolve-split l-root @splits)
+              ;r (resolve-split r-root @splits)
               l? ((complement contains?) @comp->cluster (str "@" l))
               r? ((complement contains?) @comp->cluster (str "@" r))]
-          (log-message "pair:" l " " r " " l-root " " r-root)
+          (log-message "pair:" l " " r)
           (cond
+            (is-splitted? allocator-data l r) (resolve-splits! allocator-data l r IPC)
             (and l? r?) (calc-initial-spread allocator-data l r)
             l? (allocate-centroid allocator-data r l)
             r? (allocate-centroid allocator-data l r))
@@ -1192,7 +1195,7 @@
         ;                   (map (fn[[a1 a2]] a2)
         ;                     (vals supervisor-ids->task-usage)));linear
 
-        load-con 1.36
+        load-con 0.56
         available-nodes 10
 task->component {32 3, 64 6, 33 3, 65 6, 34 3, 66 6, 67 6, 68 6, 71 7, 72 7, 41 4, 73 7, 42 4, 74 7, 11 1, 43 4, 75 7, 12 1, 44 4, 76 7, 13 1, 45 4, 77 7, 14 1, 46 4, 78 7, 15 1, 47 4, 16 1, 48 4, 49 4, 51 5, 52 5, 21 2, 53 5, 22 2, 54 5, 23 2, 55 5, 24 2, 56 5, 25 2, 57 5, 26 2, 58 5, 61 6, 62 6, 31 3, 63 6}
 task->usage {32 20.0, 64 6.25, 33 20.0, 65 6.25, 34 20.0, 66 6.25, 67 6.25, 68 6.25, 71 3.75, 72 3.75, 41 1.1111112, 73 3.75, 42 1.1111112, 74 3.75, 11 2.5, 43 1.1111112, 75 3.75, 12 2.5, 44 1.1111112, 76 3.75, 13 2.5, 45 1.1111112, 77 3.75, 14 2.5, 46 1.1111112, 78 3.75, 15 2.5, 47 1.1111112, 16 2.5, 48 1.1111112, 49 1.1111112, 51 3.75, 52 3.75, 21 4.1666665, 53 3.75, 22 4.1666665, 54 3.75, 23 4.1666665, 55 3.75, 24 4.1666665, 56 3.75, 25 4.1666665, 57 3.75, 26 4.1666665, 58 3.75, 61 6.25, 62 6.25, 31 20.0, 63 6.25}
