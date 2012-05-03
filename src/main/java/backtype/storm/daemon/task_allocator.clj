@@ -663,47 +663,6 @@
        (.toTree cluster->cap)])
     ))
 
-(defn get-comp-queue [allocator-data comp]
-  (let [lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
-        comp->cluster (:comp->cluster allocator-data)
-        splits (:splits allocator-data)
-        to-queue-comp (:to-queue-comp allocator-data)
-
-        connected-v(filter #((complement nil?) %)
-                     (map (fn [[[a b] ipc]]
-                            (let [a (resolve-split a @splits)
-                                  b (resolve-split b @splits)]
-                              (cond
-                                (= a comp) [b ipc]
-                                (= b comp) [a ipc]
-                                :else nil)))
-                       to-queue-comp))
-        
-        connected-v2(filter #((complement nil?) %)
-                      (map (fn [[v ipc]]
-                             (if-not (contains? @comp->cluster (str "@" v))
-                               [v ipc] nil))
-                        connected-v))
-
-        queue (mk-q)]
-    (doall (map #(.offer queue %) connected-v2))
-    queue))
-
-(defn total-vertex-ipc [allocator-data centroid vertex]
-  (let [lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
-        comp->cluster (:comp->cluster allocator-data)]
-    (reduce +
-      (for [[[l r] ipc] @lcomp+rcomp->IPC
-            :let [c-exists? (or (= l vertex)(= r vertex))
-                  other (if (= l vertex) r l)
-                  dont-add? (or (contains? @comp->cluster (str "@" other))
-                              (= other centroid))]
-            ]
-        (if c-exists?
-          (if-not dont-add? ipc 0)
-          0)))
-    ))
-
 (defn merge-clusters! [allocator-data l-cluster r-cluster]
   (let [comp->cluster (:comp->cluster allocator-data)
         cluster->comp (:cluster->comp allocator-data)
@@ -759,116 +718,6 @@
       (merge-clusters! allocator-data (first l-cluster) (first r-cluster))
       ))
 
-(defn calc-initial-spread [allocator-data left right]
-  (let [component->task (:component->task allocator-data)
-        comp->cluster (:comp->cluster allocator-data)
-        task->usage (:task->usage allocator-data)
-        cluster->cap (:cluster->cap allocator-data)
-        allocation (:allocation allocator-data)
-
-        more-tasks? (atom true)
-
-        s2-left (atom (@component->task left))
-        s2-right (atom (@component->task right))
-
-        l-usage (task->usage (first @s2-left))
-        r-usage (task->usage (first @s2-right))
-
-        alloc-fn (fn [d c l-t r-t]
-                   (when (> (count l-t) 0)
-                     (swap! comp->cluster update-in [(str "@" left)] into [d]))
-                   (when (> (count r-t) 0)
-                     (swap! comp->cluster update-in [(str "@" right)] into [d]))
-                   (swap! allocation assoc-in [d] {left l-t, right r-t})
-                   (.remove cluster->cap d)
-                   (.insert cluster->cap d c))
-
-        usage-fn (fn [l r l-u r-u]
-                    (+ (* l-u (count l))(* r-u (count r))))
-        ]
-    (while @more-tasks?
-      (let [destination (.top cluster->cap)
-            capacity (.find cluster->cap destination)
-            _(log-message "initial-spread:l" @s2-left " r" @s2-right " lu" l-usage " lr" r-usage)
-            split-usage (usage-fn @s2-left @s2-right l-usage r-usage)]
-        (if (t-fit? allocator-data @s2-left @s2-right capacity)
-          (do
-            (swap! more-tasks? (fn[_]false))
-            (alloc-fn destination (- capacity split-usage) @s2-left @s2-right)
-            (log-message "initial-spread:finish " @s2-left " " @s2-right " " capacity)
-            (log-message "initial-spread:finish " (pr-str @allocation))
-            (log-message "initial-spread:finish " (.toTree cluster->cap))
-            (log-message "initial-spread:finish " (pr-str @comp->cluster)))
-          (let [s (calc-splits allocator-data destination @s2-left @s2-right)
-                s1-left (first (s :left))
-                s1-right (first (s :right))
-                _(log-message "initial-spread:" s1-left " " s1-right " " @s2-left " " @s2-right)
-                split-usage (usage-fn s1-left s1-right l-usage r-usage)]
-            (if-not (and (empty? s1-left)(empty? s1-right))
-              (do
-                (reset! s2-left [])
-                (reset! s2-right [])
-                (swap! s2-left into (second (s :left)))
-                (swap! s2-right into (second (s :right)))
-                (alloc-fn destination (- capacity split-usage) s1-left s1-right)
-                (log-message "initial-spread:" s1-left " " s1-right " " capacity)
-                (log-message "initial-spread:" (pr-str @allocation))
-                (log-message "initial-spread:" (.toTree cluster->cap))
-                (log-message "initial-spread:" (pr-str @comp->cluster)))
-              (swap! more-tasks? (fn[_]false)))          ; finish
-            ))))
-    ;[destinations allocation]
-    ))
-
-(defn calc-candidate-alloc [allocator-data initial-spread destinations centroid vertex]
-  (let [component->task (:component->task allocator-data)
-        task->usage (:task->usage allocator-data)
-        cand-des (atom destinations)
-        cand-alloc (atom initial-spread)
-        res-des (atom {})
-        assigned (atom 0)
-
-        next-v vertex
-        next-t (@component->task next-v)
-        next-usage (task->usage (first next-t))]
-
-    (while (and (> (count @cand-des) 0) (< @assigned (count next-t)))
-      (let [d (first @cand-des)
-            d-id (first d)
-            d-cap (second d)
-
-            cnt @assigned
-
-            t-fit (min
-                    (floor (float (/ d-cap next-usage)))
-                    (- (count next-t) cnt))]
-        (when (> t-fit 0)
-          (swap! cand-alloc update-in [d-id]
-            (partial merge-with into) {next-v (subvec next-t cnt (+ cnt t-fit))})
-          (swap! cand-des update-in [d-id] (fn[_] (- d-cap (* t-fit next-usage))))
-          (reset! assigned (+ cnt t-fit)))
-
-;      (log-message "cand-alloc: d1:" d-id" d2:" d-cap)
-;      (log-message "cand-alloc: nv:" next-v " nt:" next-t " nu:" next-usage)
-;      (log-message "cand-alloc:alloc:" @cand-alloc)
-;      (log-message "cand-alloc:des:" @cand-des)
-;      (log-message "cand-alloc:assigned:" @assigned)
-;      (log-message "cand-alloc**********************")
-
-      (if-not (= (+ cnt t-fit) (count next-t))
-        (do
-          (swap! res-des assoc-in [d-id] (@cand-des d-id))
-          (swap! cand-des dissoc d-id)))
-      ))
-    (doall
-      (map (fn[[k v]]
-             (swap! res-des assoc-in [k] v))
-        @cand-des))
-
-      [@cand-alloc @res-des
-       (alloc-ipc-gain allocator-data centroid @cand-alloc)]
-    ))
-
 (defn apply-alloc [allocator-data cand-alloc cand-des]
   (let [cluster->cap (:cluster->cap allocator-data)
         component->task (:component->task allocator-data)
@@ -891,6 +740,11 @@
                              (let [spl (get-splits-fn a1)]
                                (if spl (into s spl) s))) []
             (apply merge-with into (vals (merge @allocation cand-alloc))))
+
+        local-comp->cluster (apply merge-with into
+                              (doall
+                                (for [d (keys cand-alloc) c (keys (cand-alloc d))]
+                                  {c [d]})))
         ]
     (doall
       (map (fn[[k v]](.insert cluster->cap k v))
@@ -918,7 +772,7 @@
     (log-message "apply-alloc:component->task:" (pr-str @component->task))
     (log-message "apply-alloc:comp->usage:" (pr-str @comp->usage))
     (log-message "apply-alloc:comp->root:" (pr-str @comp->root))
-    
+
     ;(doall
     ;  (for [d (keys cand-alloc) t (apply concat (vals (cand-alloc d)))]
     ;    (do
@@ -929,8 +783,8 @@
 
     (doall
       (for [c (keys (apply merge (vals cand-alloc)))
-            :let [clusters (into [] (set 
-                                      (into (keys cand-alloc)
+            :let [clusters (into [] (set
+                                      (into (local-comp->cluster c)
                                         (get @comp->cluster (str "@" c)))))]]
         (if-not (contains? @splits c)
           (swap! comp->cluster assoc-in [(str "@" c)] clusters)
@@ -942,6 +796,128 @@
     (log-message "apply-alloc:allocation:" (pr-str @allocation))
     ))
 
+(defn calc-initial-spread [allocator-data left right]
+  (let [component->task (:component->task allocator-data)
+        comp->cluster (:comp->cluster allocator-data)
+        task->usage (:task->usage allocator-data)
+        cluster->cap (:cluster->cap allocator-data)
+        allocation (:allocation allocator-data)
+
+        cand-des (atom {})
+        cand-alloc (atom @allocation)
+
+        more-tasks? (atom true)
+
+        s2-left (atom (@component->task left))
+        s2-right (atom (@component->task right))
+
+        l-usage (task->usage (first @s2-left))
+        r-usage (task->usage (first @s2-right))
+
+        alloc-fn (fn [d c l-t r-t]
+                   (when-not (or (empty? l-t)(empty? r-t))
+                     (swap! cand-alloc update-in [d]
+                       (partial merge-with into) {left l-t})
+                     (swap! cand-alloc update-in [d]
+                       (partial merge-with into) {right r-t})
+                     (swap! cand-des update-in [d] (fn[_] c))
+
+                     ;(swap! comp->cluster update-in [(str "@" left)] into [d])
+                     ;(swap! comp->cluster update-in [(str "@" right)] into [d])
+                     ;(swap! allocation assoc-in [d] {left l-t, right r-t})
+                     (.remove cluster->cap d)
+                     ;(.insert cluster->cap d c)
+                     ))
+
+        usage-fn (fn [l r l-u r-u]
+                    (+ (* l-u (count l))(* r-u (count r))))
+        ]
+    (while @more-tasks?
+      (let [destination (.top cluster->cap)
+            capacity (.find cluster->cap destination)
+            _(log-message "initial-spread:l" @s2-left " r" @s2-right " lu" l-usage " lr" r-usage)
+            split-usage (usage-fn @s2-left @s2-right l-usage r-usage)]
+        (if (t-fit? allocator-data @s2-left @s2-right capacity)
+          (do
+            (swap! more-tasks? (fn[_]false))
+            (alloc-fn destination (- capacity split-usage) @s2-left @s2-right)
+            (log-message "initial-spread:finish " @s2-left " " @s2-right " " capacity)
+            (log-message "initial-spread:finish " (pr-str @allocation))
+            (log-message "initial-spread:finish " (.toTree cluster->cap))
+            (log-message "initial-spread:finish " (pr-str @comp->cluster)))
+          (let [s (calc-splits allocator-data destination @s2-left @s2-right)
+                s1-left (first (s :left))
+                s1-right (first (s :right))
+                _(log-message "initial-spread:" s1-left " " s1-right " " @s2-left " " @s2-right)
+                split-usage (usage-fn s1-left s1-right l-usage r-usage)]
+            (if-not (or (empty? s1-left)(empty? s1-right))
+              (do
+                (reset! s2-left [])
+                (reset! s2-right [])
+                (swap! s2-left into (second (s :left)))
+                (swap! s2-right into (second (s :right)))
+                (alloc-fn destination (- capacity split-usage) s1-left s1-right)
+                (log-message "initial-spread:" s1-left " " s1-right " " capacity)
+                (log-message "initial-spread:" (pr-str @allocation))
+                (log-message "initial-spread:" (.toTree cluster->cap))
+                (log-message "initial-spread:" (pr-str @comp->cluster)))
+              (swap! more-tasks? (fn[_]false)))          ; finish
+            ))))
+    (apply-alloc allocator-data @cand-alloc @cand-des)
+    ))
+
+(defn calc-candidate-alloc [allocator-data initial-spread destinations
+                            s-destinations centroid vertex]
+  (let [component->task (:component->task allocator-data)
+        task->usage (:task->usage allocator-data)
+        cand-des (atom destinations)
+        cand-alloc (atom initial-spread)
+        ;res-des (atom {})
+        assigned (atom 0)
+        index (atom (dec (count s-destinations)))
+
+        next-v vertex
+        next-t (@component->task next-v)
+        next-usage (task->usage (first next-t))]
+
+    (while (and (>= @index 0) (< @assigned (count next-t)))
+      (let [d-id (first (nth s-destinations @index))
+            d-cap (@cand-des d-id)
+            ;d-id (first d)
+            ;d-cap (second d)
+
+            cnt @assigned
+
+            t-fit (min
+                    (floor (float (/ d-cap next-usage)))
+                    (- (count next-t) cnt))]
+        (when (> t-fit 0)
+          (swap! cand-alloc update-in [d-id]
+            (partial merge-with into) {next-v (subvec next-t cnt (+ cnt t-fit))})
+          (swap! cand-des update-in [d-id] (fn[_] (- d-cap (* t-fit next-usage))))
+          (reset! assigned (+ cnt t-fit)))
+
+;      (log-message "cand-alloc: d1:" d-id" d2:" d-cap)
+;      (log-message "cand-alloc: nv:" next-v " nt:" next-t " nu:" next-usage)
+;      (log-message "cand-alloc:alloc:" @cand-alloc)
+;      (log-message "cand-alloc:des:" @cand-des)
+;      (log-message "cand-alloc:assigned:" @assigned)
+;      (log-message "cand-alloc**********************")
+
+      (if-not (= (+ cnt t-fit) (count next-t))
+        ;(do
+        ;  (swap! res-des assoc-in [d-id] (@cand-des d-id))
+        ;  (swap! cand-des dissoc d-id))
+        (swap! index dec))
+      ))
+    ;(doall
+    ;  (map (fn[[k v]]
+    ;         (swap! res-des assoc-in [k] v))
+    ;    @cand-des))
+
+      [@cand-alloc @cand-des
+       (alloc-ipc-gain allocator-data centroid @cand-alloc)]
+    ))
 
 (defn allocate-centroid [allocator-data centroid vertex]
   (let [lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
@@ -949,6 +925,7 @@
         task->usage (:task->usage allocator-data)
         comp->cluster (:comp->cluster allocator-data)
         allocation (:allocation allocator-data)
+        component->task (:component->task allocator-data)
 
         ;ret (calc-initial-spread allocator-data centroid (.poll centroid-queue))
         clusters (@comp->cluster (str "@" centroid))
@@ -961,6 +938,23 @@
                                    {d cap}
                                    )))))
 
+        v-tasks (@component->task vertex)
+
+        s-destinations (atom
+                         (sort-by second <
+                           (doall
+                             (for [[d cap] @destinations
+                                   :let [c-tasks ((@allocation d) centroid)
+                                         priority (estimate-ipc-gain-centroid
+                                                    allocator-data centroid vertex
+                                                    c-tasks v-tasks cap)]]
+                               [d priority]))))
+        ;s-destinations (atom (doall
+        ;                       (for [d (sort > clusters)]
+        ;                         [d 0])))
+
+        ;_ (print @s-destinations "\n")
+        
         initial-spread (apply merge
                          (doall
                            (for [d (sort < clusters)]
@@ -969,7 +963,7 @@
         cur-spread (atom initial-spread)
 
         first-alloc (calc-candidate-alloc allocator-data initial-spread @destinations
-                      centroid vertex)
+                      @s-destinations centroid vertex)
 
         best-alloc (atom first-alloc)
         more-allocs? (atom true)
@@ -1060,9 +1054,11 @@
                                   {k (+ k-capacity c-usage)}
                                   (dissoc (dissoc @destinations k) next-node)))
 
+            cand-s-destinations (conj @s-destinations [next-node 0])
+
             cand-alloc (when (and (> (count c-tasks) 1) (<= c-usage capacity))
                          (calc-candidate-alloc allocator-data cand-spread
-                           cand-destinations centroid vertex))
+                           cand-destinations cand-s-destinations centroid vertex))
 
             cand-ipc (or (nth cand-alloc 2) 0)
             best-ipc (or (nth @best-alloc 2) 0)
@@ -1089,6 +1085,7 @@
                 (reset! best-alloc cand-alloc)
                 (reset! cur-spread cand-spread)
                 (reset! destinations cand-destinations)
+                (reset! s-destinations cand-s-destinations)
                 (when new-node? 
                   (new-node-fn false)))
               (finish?-fn next-node))
@@ -1105,6 +1102,28 @@
     (apply-alloc allocator-data (first @best-alloc) (second @best-alloc))
     ))
 
+;(defn handle-splits [allocator-data l r IPC]
+;  (let [splits (:splits allocator-data)
+;        comp->cluster (:comp->cluster allocator-data)
+        
+;        l? (contains? @splits l)
+;        r? (contains? @splits r)
+;        l-s (if l? (str l ".1") l)
+;        r-s (if r? (str r ".1") r)
+;        l-alloc? (contains? @comp->cluster (str "@" l-s))
+;        r-alloc? (contains? @comp->cluster (str "@" r-s))
+        
+;        ]
+;    (cond
+;        (and l? r?) 0 ; means both are partly allocated! just resolve splits and continue
+;        (and (= c l-s) r?)(allocate-centroid allocator-data l-s r) ; nothing special here
+;        (and (= c r-s) l?)(allocate-centroid allocator-data r-s l) ; nothing special here
+;        (and (= c l-s) l?) 0; calc-initial the rest c, and then
+;        (and (= c r-s) r?) 0
+;        :else -1 ; if none is splitted we do nothing in here
+
+;      )
+;    ))
 
 (defnk allocator-alg3 [task->component task->usage ltask+rtask->IPC load-con available-nodes]
   (let [allocator-data (mk-allocator-data task->component
@@ -1143,7 +1162,7 @@
       (log-message "to-queue-comp:" (pr-str to-queue-comp))
       (log-message "unlinked-tasks:" (pr-str (:unlinked-tasks allocator-data)))
 
-      (print (pr-str queue) "\n")
+      ;(print (pr-str queue) "\n")
       (while (.peek queue)
         (let [entry (.poll queue)
               pair (first entry)
@@ -1195,11 +1214,11 @@
         ;                   (map (fn[[a1 a2]] a2)
         ;                     (vals supervisor-ids->task-usage)));linear
 
-        load-con 0.56
+        load-con 0.68
         available-nodes 10
-task->component {32 3, 64 6, 33 3, 65 6, 34 3, 66 6, 67 6, 68 6, 71 7, 72 7, 41 4, 73 7, 42 4, 74 7, 11 1, 43 4, 75 7, 12 1, 44 4, 76 7, 13 1, 45 4, 77 7, 14 1, 46 4, 78 7, 15 1, 47 4, 16 1, 48 4, 49 4, 51 5, 52 5, 21 2, 53 5, 22 2, 54 5, 23 2, 55 5, 24 2, 56 5, 25 2, 57 5, 26 2, 58 5, 61 6, 62 6, 31 3, 63 6}
-task->usage {32 20.0, 64 6.25, 33 20.0, 65 6.25, 34 20.0, 66 6.25, 67 6.25, 68 6.25, 71 3.75, 72 3.75, 41 1.1111112, 73 3.75, 42 1.1111112, 74 3.75, 11 2.5, 43 1.1111112, 75 3.75, 12 2.5, 44 1.1111112, 76 3.75, 13 2.5, 45 1.1111112, 77 3.75, 14 2.5, 46 1.1111112, 78 3.75, 15 2.5, 47 1.1111112, 16 2.5, 48 1.1111112, 49 1.1111112, 51 3.75, 52 3.75, 21 4.1666665, 53 3.75, 22 4.1666665, 54 3.75, 23 4.1666665, 55 3.75, 24 4.1666665, 56 3.75, 25 4.1666665, 57 3.75, 26 4.1666665, 58 3.75, 61 6.25, 62 6.25, 31 20.0, 63 6.25}
-ltask+rtask->IPC {[58 61] 3.125, [57 61] 3.125, [58 62] 3.125, [34 71] 50.0, [56 61] 3.125, [57 62] 3.125, [26 31] 12.5, [58 63] 3.125, [33 71] 50.0, [34 72] 50.0, [55 61] 3.125, [56 62] 3.125, [25 31] 12.5, [57 63] 3.125, [26 32] 12.5, [58 64] 3.125, [33 72] 50.0, [34 73] 50.0, [54 61] 3.125, [55 62] 3.125, [24 31] 12.5, [56 63] 3.125, [25 32] 12.5, [57 64] 3.125, [26 33] 12.5, [58 65] 3.125, [32 71] 50.0, [33 73] 50.0, [34 74] 50.0, [53 61] 3.125, [54 62] 3.125, [23 31] 12.5, [55 63] 3.125, [24 32] 12.5, [56 64] 3.125, [25 33] 12.5, [57 65] 3.125, [26 34] 12.5, [58 66] 3.125, [31 71] 50.0, [32 72] 50.0, [33 74] 50.0, [34 75] 50.0, [52 61] 3.125, [53 62] 3.125, [22 31] 12.5, [54 63] 3.125, [23 32] 12.5, [55 64] 3.125, [24 33] 12.5, [56 65] 3.125, [25 34] 12.5, [57 66] 3.125, [58 67] 3.125, [31 72] 50.0, [32 73] 50.0, [33 75] 50.0, [34 76] 50.0, [51 61] 3.125, [52 62] 3.125, [21 31] 12.5, [53 63] 3.125, [22 32] 12.5, [54 64] 3.125, [23 33] 12.5, [55 65] 3.125, [24 34] 12.5, [56 66] 3.125, [57 67] 3.125, [58 68] 3.125, [31 73] 50.0, [32 74] 50.0, [33 76] 50.0, [34 77] 50.0, [51 62] 3.125, [52 63] 3.125, [21 32] 12.5, [53 64] 3.125, [22 33] 12.5, [54 65] 3.125, [23 34] 12.5, [55 66] 3.125, [56 67] 3.125, [57 68] 3.125, [31 74] 50.0, [32 75] 50.0, [33 77] 50.0, [34 78] 50.0, [49 61] 13.888889, [51 63] 3.125, [52 64] 3.125, [21 33] 12.5, [53 65] 3.125, [22 34] 12.5, [54 66] 3.125, [55 67] 3.125, [56 68] 3.125, [31 75] 50.0, [32 76] 50.0, [33 78] 50.0, [48 61] 13.888889, [49 62] 13.888889, [51 64] 3.125, [52 65] 3.125, [21 34] 12.5, [53 66] 3.125, [54 67] 3.125, [55 68] 3.125, [58 71] 21.875, [31 76] 50.0, [32 77] 50.0, [47 61] 13.888889, [48 62] 13.888889, [49 63] 13.888889, [51 65] 3.125, [52 66] 3.125, [53 67] 3.125, [54 68] 3.125, [57 71] 21.875, [58 72] 21.875, [31 77] 50.0, [32 78] 50.0, [46 61] 13.888889, [47 62] 13.888889, [16 31] 29.166666, [48 63] 13.888889, [49 64] 13.888889, [51 66] 3.125, [52 67] 3.125, [53 68] 3.125, [56 71] 21.875, [57 72] 21.875, [58 73] 21.875, [31 78] 50.0, [45 61] 13.888889, [46 62] 13.888889, [15 31] 29.166666, [47 63] 13.888889, [16 32] 29.166666, [48 64] 13.888889, [49 65] 13.888889, [51 67] 3.125, [52 68] 3.125, [55 71] 21.875, [56 72] 21.875, [57 73] 21.875, [58 74] 21.875, [44 61] 13.888889, [45 62] 13.888889, [14 31] 29.166666, [46 63] 13.888889, [15 32] 29.166666, [47 64] 13.888889, [16 33] 29.166666, [48 65] 13.888889, [49 66] 13.888889, [51 68] 3.125, [54 71] 21.875, [55 72] 21.875, [56 73] 21.875, [57 74] 21.875, [58 75] 21.875, [43 61] 13.888889, [44 62] 13.888889, [13 31] 29.166666, [45 63] 13.888889, [14 32] 29.166666, [46 64] 13.888889, [15 33] 29.166666, [47 65] 13.888889, [16 34] 29.166666, [48 66] 13.888889, [49 67] 13.888889, [53 71] 21.875, [54 72] 21.875, [55 73] 21.875, [56 74] 21.875, [57 75] 21.875, [58 76] 21.875, [42 61] 13.888889, [43 62] 13.888889, [12 31] 29.166666, [44 63] 13.888889, [13 32] 29.166666, [45 64] 13.888889, [14 33] 29.166666, [46 65] 13.888889, [15 34] 29.166666, [47 66] 13.888889, [48 67] 13.888889, [49 68] 13.888889, [52 71] 21.875, [53 72] 21.875, [54 73] 21.875, [55 74] 21.875, [56 75] 21.875, [57 76] 21.875, [58 77] 21.875, [41 61] 13.888889, [42 62] 13.888889, [11 31] 29.166666, [43 63] 13.888889, [12 32] 29.166666, [44 64] 13.888889, [13 33] 29.166666, [45 65] 13.888889, [14 34] 29.166666, [46 66] 13.888889, [47 67] 13.888889, [48 68] 13.888889, [51 71] 21.875, [52 72] 21.875, [53 73] 21.875, [54 74] 21.875, [55 75] 21.875, [56 76] 21.875, [57 77] 21.875, [58 78] 21.875, [41 62] 13.888889, [42 63] 13.888889, [11 32] 29.166666, [43 64] 13.888889, [12 33] 29.166666, [44 65] 13.888889, [13 34] 29.166666, [45 66] 13.888889, [46 67] 13.888889, [47 68] 13.888889, [51 72] 21.875, [52 73] 21.875, [53 74] 21.875, [54 75] 21.875, [55 76] 21.875, [56 77] 21.875, [57 78] 21.875, [41 63] 13.888889, [42 64] 13.888889, [11 33] 29.166666, [43 65] 13.888889, [12 34] 29.166666, [44 66] 13.888889, [45 67] 13.888889, [46 68] 13.888889, [51 73] 21.875, [52 74] 21.875, [53 75] 21.875, [54 76] 21.875, [55 77] 21.875, [56 78] 21.875, [41 64] 13.888889, [42 65] 13.888889, [11 34] 29.166666, [43 66] 13.888889, [44 67] 13.888889, [45 68] 13.888889, [51 74] 21.875, [52 75] 21.875, [53 76] 21.875, [54 77] 21.875, [55 78] 21.875, [41 65] 13.888889, [42 66] 13.888889, [43 67] 13.888889, [44 68] 13.888889, [51 75] 21.875, [52 76] 21.875, [53 77] 21.875, [54 78] 21.875, [41 66] 13.888889, [42 67] 13.888889, [43 68] 13.888889, [51 76] 21.875, [52 77] 21.875, [53 78] 21.875, [41 67] 13.888889, [42 68] 13.888889, [51 77] 21.875, [52 78] 21.875, [41 68] 13.888889, [51 78] 21.875}
+task->component {32 3, 64 6, 96 9, 33 3, 65 6, 97 9, 34 3, 66 6, 98 9, 67 6, 99 9, 68 6, 71 7, 72 7, 41 4, 73 7, 42 4, 74 7, 11 1, 43 4, 75 7, 12 1, 44 4, 76 7, 13 1, 45 4, 77 7, 14 1, 46 4, 78 7, 15 1, 47 4, 16 1, 48 4, 49 4, 81 8, 82 8, 51 5, 83 8, 52 5, 84 8, 21 2, 53 5, 85 8, 22 2, 54 5, 86 8, 23 2, 55 5, 87 8, 24 2, 56 5, 88 8, 25 2, 57 5, 89 8, 26 2, 58 5, 91 9, 92 9, 61 6, 93 9, 62 6, 94 9, 31 3, 63 6, 95 9}
+task->usage {32 17.5, 64 10.0, 96 1.1111112, 33 17.5, 65 10.0, 97 1.1111112, 34 17.5, 66 10.0, 98 1.1111112, 67 10.0, 99 1.1111112, 68 10.0, 71 2.5, 72 2.5, 41 3.3333333, 73 2.5, 42 3.3333333, 74 2.5, 11 1.6666666, 43 3.3333333, 75 2.5, 12 1.6666666, 44 3.3333333, 76 2.5, 13 1.6666666, 45 3.3333333, 77 2.5, 14 1.6666666, 46 3.3333333, 78 2.5, 15 1.6666666, 47 3.3333333, 16 1.6666666, 48 3.3333333, 49 3.3333333, 81 2.2222223, 82 2.2222223, 51 8.75, 83 2.2222223, 52 8.75, 84 2.2222223, 21 5.0, 53 8.75, 85 2.2222223, 22 5.0, 54 8.75, 86 2.2222223, 23 5.0, 55 8.75, 87 2.2222223, 24 5.0, 56 8.75, 88 2.2222223, 25 5.0, 57 8.75, 89 2.2222223, 26 5.0, 58 8.75, 91 1.1111112, 92 1.1111112, 61 10.0, 93 1.1111112, 62 10.0, 94 1.1111112, 31 17.5, 63 10.0, 95 1.1111112}
+ltask+rtask->IPC {[21 84] 3.7037036, [22 85] 3.7037036, [23 86] 3.7037036, [24 87] 3.7037036, [25 88] 3.7037036, [26 89] 3.7037036, [21 85] 3.7037036, [22 86] 3.7037036, [23 87] 3.7037036, [24 88] 3.7037036, [25 89] 3.7037036, [16 81] 18.518518, [21 86] 3.7037036, [22 87] 3.7037036, [23 88] 3.7037036, [24 89] 3.7037036, [15 81] 18.518518, [16 82] 18.518518, [21 87] 3.7037036, [22 88] 3.7037036, [23 89] 3.7037036, [89 91] 7.4074073, [68 71] 21.875, [14 81] 18.518518, [15 82] 18.518518, [16 83] 18.518518, [21 88] 3.7037036, [22 89] 3.7037036, [88 91] 7.4074073, [89 92] 7.4074073, [58 61] 3.125, [67 71] 21.875, [68 72] 21.875, [13 81] 18.518518, [14 82] 18.518518, [15 83] 18.518518, [16 84] 18.518518, [21 89] 3.7037036, [87 91] 7.4074073, [88 92] 7.4074073, [57 61] 3.125, [89 93] 7.4074073, [58 62] 3.125, [66 71] 21.875, [34 71] 18.75, [67 72] 21.875, [68 73] 21.875, [12 81] 18.518518, [13 82] 18.518518, [14 83] 18.518518, [15 84] 18.518518, [16 85] 18.518518, [86 91] 7.4074073, [87 92] 7.4074073, [56 61] 3.125, [88 93] 7.4074073, [57 62] 3.125, [89 94] 7.4074073, [26 31] 54.166668, [58 63] 3.125, [33 71] 18.75, [66 72] 21.875, [34 72] 18.75, [67 73] 21.875, [68 74] 21.875, [11 81] 18.518518, [12 82] 18.518518, [13 83] 18.518518, [14 84] 18.518518, [15 85] 18.518518, [16 86] 18.518518, [85 91] 7.4074073, [86 92] 7.4074073, [55 61] 3.125, [87 93] 7.4074073, [56 62] 3.125, [88 94] 7.4074073, [25 31] 54.166668, [57 63] 3.125, [89 95] 7.4074073, [26 32] 54.166668, [58 64] 3.125, [65 71] 21.875, [33 72] 18.75, [66 73] 21.875, [34 73] 18.75, [67 74] 21.875, [68 75] 21.875, [11 82] 18.518518, [12 83] 18.518518, [13 84] 18.518518, [14 85] 18.518518, [15 86] 18.518518, [16 87] 18.518518, [84 91] 7.4074073, [85 92] 7.4074073, [54 61] 3.125, [86 93] 7.4074073, [55 62] 3.125, [87 94] 7.4074073, [24 31] 54.166668, [56 63] 3.125, [88 95] 7.4074073, [25 32] 54.166668, [57 64] 3.125, [89 96] 7.4074073, [26 33] 54.166668, [58 65] 3.125, [64 71] 21.875, [32 71] 18.75, [65 72] 21.875, [33 73] 18.75, [66 74] 21.875, [34 74] 18.75, [67 75] 21.875, [68 76] 21.875, [11 83] 18.518518, [12 84] 18.518518, [13 85] 18.518518, [14 86] 18.518518, [15 87] 18.518518, [16 88] 18.518518, [83 91] 7.4074073, [84 92] 7.4074073, [53 61] 3.125, [85 93] 7.4074073, [54 62] 3.125, [86 94] 7.4074073, [23 31] 54.166668, [55 63] 3.125, [87 95] 7.4074073, [24 32] 54.166668, [56 64] 3.125, [88 96] 7.4074073, [25 33] 54.166668, [57 65] 3.125, [89 97] 7.4074073, [26 34] 54.166668, [58 66] 3.125, [63 71] 21.875, [31 71] 18.75, [64 72] 21.875, [32 72] 18.75, [65 73] 21.875, [33 74] 18.75, [66 75] 21.875, [34 75] 18.75, [67 76] 21.875, [68 77] 21.875, [11 84] 18.518518, [12 85] 18.518518, [13 86] 18.518518, [14 87] 18.518518, [15 88] 18.518518, [16 89] 18.518518, [82 91] 7.4074073, [83 92] 7.4074073, [52 61] 3.125, [84 93] 7.4074073, [53 62] 3.125, [85 94] 7.4074073, [22 31] 54.166668, [54 63] 3.125, [86 95] 7.4074073, [23 32] 54.166668, [55 64] 3.125, [87 96] 7.4074073, [24 33] 54.166668, [56 65] 3.125, [88 97] 7.4074073, [25 34] 54.166668, [57 66] 3.125, [89 98] 7.4074073, [58 67] 3.125, [62 71] 21.875, [63 72] 21.875, [31 72] 18.75, [64 73] 21.875, [32 73] 18.75, [65 74] 21.875, [33 75] 18.75, [66 76] 21.875, [34 76] 18.75, [67 77] 21.875, [68 78] 21.875, [11 85] 18.518518, [12 86] 18.518518, [13 87] 18.518518, [14 88] 18.518518, [15 89] 18.518518, [81 91] 7.4074073, [49 91] 14.814815, [82 92] 7.4074073, [51 61] 3.125, [83 93] 7.4074073, [52 62] 3.125, [84 94] 7.4074073, [21 31] 54.166668, [53 63] 3.125, [85 95] 7.4074073, [22 32] 54.166668, [54 64] 3.125, [86 96] 7.4074073, [23 33] 54.166668, [55 65] 3.125, [87 97] 7.4074073, [24 34] 54.166668, [56 66] 3.125, [88 98] 7.4074073, [57 67] 3.125, [89 99] 7.4074073, [58 68] 3.125, [61 71] 21.875, [62 72] 21.875, [63 73] 21.875, [31 73] 18.75, [64 74] 21.875, [32 74] 18.75, [65 75] 21.875, [33 76] 18.75, [66 77] 21.875, [34 77] 18.75, [67 78] 21.875, [11 86] 18.518518, [12 87] 18.518518, [13 88] 18.518518, [14 89] 18.518518, [48 91] 14.814815, [81 92] 7.4074073, [49 92] 14.814815, [82 93] 7.4074073, [51 62] 3.125, [83 94] 7.4074073, [52 63] 3.125, [84 95] 7.4074073, [21 32] 54.166668, [53 64] 3.125, [85 96] 7.4074073, [22 33] 54.166668, [54 65] 3.125, [86 97] 7.4074073, [23 34] 54.166668, [55 66] 3.125, [87 98] 7.4074073, [56 67] 3.125, [88 99] 7.4074073, [57 68] 3.125, [61 72] 21.875, [62 73] 21.875, [63 74] 21.875, [31 74] 18.75, [64 75] 21.875, [32 75] 18.75, [65 76] 21.875, [33 77] 18.75, [66 78] 21.875, [34 78] 18.75, [11 87] 18.518518, [12 88] 18.518518, [13 89] 18.518518, [47 91] 14.814815, [49 61] 13.888889, [48 92] 14.814815, [81 93] 7.4074073, [49 93] 14.814815, [82 94] 7.4074073, [51 63] 3.125, [83 95] 7.4074073, [52 64] 3.125, [84 96] 7.4074073, [21 33] 54.166668, [53 65] 3.125, [85 97] 7.4074073, [22 34] 54.166668, [54 66] 3.125, [86 98] 7.4074073, [55 67] 3.125, [87 99] 7.4074073, [56 68] 3.125, [61 73] 21.875, [62 74] 21.875, [63 75] 21.875, [31 75] 18.75, [64 76] 21.875, [32 76] 18.75, [65 77] 21.875, [33 78] 18.75, [11 88] 18.518518, [12 89] 18.518518, [46 91] 14.814815, [48 61] 13.888889, [47 92] 14.814815, [49 62] 13.888889, [48 93] 14.814815, [81 94] 7.4074073, [49 94] 14.814815, [82 95] 7.4074073, [51 64] 3.125, [83 96] 7.4074073, [52 65] 3.125, [84 97] 7.4074073, [21 34] 54.166668, [53 66] 3.125, [85 98] 7.4074073, [54 67] 3.125, [86 99] 7.4074073, [55 68] 3.125, [61 74] 21.875, [62 75] 21.875, [63 76] 21.875, [31 76] 18.75, [64 77] 21.875, [32 77] 18.75, [65 78] 21.875, [11 89] 18.518518, [45 91] 14.814815, [47 61] 13.888889, [46 92] 14.814815, [48 62] 13.888889, [47 93] 14.814815, [49 63] 13.888889, [48 94] 14.814815, [81 95] 7.4074073, [49 95] 14.814815, [82 96] 7.4074073, [51 65] 3.125, [83 97] 7.4074073, [52 66] 3.125, [84 98] 7.4074073, [53 67] 3.125, [85 99] 7.4074073, [54 68] 3.125, [61 75] 21.875, [62 76] 21.875, [63 77] 21.875, [31 77] 18.75, [64 78] 21.875, [32 78] 18.75, [44 91] 14.814815, [46 61] 13.888889, [45 92] 14.814815, [47 62] 13.888889, [46 93] 14.814815, [16 31] 29.166666, [48 63] 13.888889, [47 94] 14.814815, [49 64] 13.888889, [48 95] 14.814815, [81 96] 7.4074073, [49 96] 14.814815, [82 97] 7.4074073, [51 66] 3.125, [83 98] 7.4074073, [52 67] 3.125, [84 99] 7.4074073, [53 68] 3.125, [61 76] 21.875, [62 77] 21.875, [63 78] 21.875, [31 78] 18.75, [43 91] 14.814815, [45 61] 13.888889, [44 92] 14.814815, [46 62] 13.888889, [45 93] 14.814815, [15 31] 29.166666, [47 63] 13.888889, [46 94] 14.814815, [16 32] 29.166666, [48 64] 13.888889, [47 95] 14.814815, [49 65] 13.888889, [48 96] 14.814815, [81 97] 7.4074073, [49 97] 14.814815, [82 98] 7.4074073, [51 67] 3.125, [83 99] 7.4074073, [52 68] 3.125, [61 77] 21.875, [62 78] 21.875, [42 91] 14.814815, [44 61] 13.888889, [43 92] 14.814815, [45 62] 13.888889, [44 93] 14.814815, [14 31] 29.166666, [46 63] 13.888889, [45 94] 14.814815, [15 32] 29.166666, [47 64] 13.888889, [46 95] 14.814815, [16 33] 29.166666, [48 65] 13.888889, [47 96] 14.814815, [49 66] 13.888889, [48 97] 14.814815, [81 98] 7.4074073, [49 98] 14.814815, [82 99] 7.4074073, [51 68] 3.125, [61 78] 21.875, [41 91] 14.814815, [43 61] 13.888889, [42 92] 14.814815, [44 62] 13.888889, [43 93] 14.814815, [13 31] 29.166666, [45 63] 13.888889, [44 94] 14.814815, [14 32] 29.166666, [46 64] 13.888889, [45 95] 14.814815, [15 33] 29.166666, [47 65] 13.888889, [46 96] 14.814815, [16 34] 29.166666, [48 66] 13.888889, [47 97] 14.814815, [49 67] 13.888889, [48 98] 14.814815, [81 99] 7.4074073, [49 99] 14.814815, [42 61] 13.888889, [41 92] 14.814815, [43 62] 13.888889, [42 93] 14.814815, [12 31] 29.166666, [44 63] 13.888889, [43 94] 14.814815, [13 32] 29.166666, [45 64] 13.888889, [44 95] 14.814815, [14 33] 29.166666, [46 65] 13.888889, [45 96] 14.814815, [15 34] 29.166666, [47 66] 13.888889, [46 97] 14.814815, [48 67] 13.888889, [47 98] 14.814815, [49 68] 13.888889, [48 99] 14.814815, [41 61] 13.888889, [42 62] 13.888889, [41 93] 14.814815, [11 31] 29.166666, [43 63] 13.888889, [42 94] 14.814815, [12 32] 29.166666, [44 64] 13.888889, [43 95] 14.814815, [13 33] 29.166666, [45 65] 13.888889, [44 96] 14.814815, [14 34] 29.166666, [46 66] 13.888889, [45 97] 14.814815, [47 67] 13.888889, [46 98] 14.814815, [48 68] 13.888889, [47 99] 14.814815, [41 62] 13.888889, [42 63] 13.888889, [41 94] 14.814815, [11 32] 29.166666, [43 64] 13.888889, [42 95] 14.814815, [12 33] 29.166666, [44 65] 13.888889, [43 96] 14.814815, [13 34] 29.166666, [45 66] 13.888889, [44 97] 14.814815, [46 67] 13.888889, [45 98] 14.814815, [47 68] 13.888889, [46 99] 14.814815, [41 63] 13.888889, [42 64] 13.888889, [41 95] 14.814815, [11 33] 29.166666, [43 65] 13.888889, [42 96] 14.814815, [12 34] 29.166666, [44 66] 13.888889, [43 97] 14.814815, [45 67] 13.888889, [44 98] 14.814815, [46 68] 13.888889, [45 99] 14.814815, [41 64] 13.888889, [42 65] 13.888889, [41 96] 14.814815, [11 34] 29.166666, [43 66] 13.888889, [42 97] 14.814815, [44 67] 13.888889, [43 98] 14.814815, [45 68] 13.888889, [44 99] 14.814815, [26 81] 3.7037036, [41 65] 13.888889, [42 66] 13.888889, [41 97] 14.814815, [43 67] 13.888889, [42 98] 14.814815, [44 68] 13.888889, [43 99] 14.814815, [25 81] 3.7037036, [26 82] 3.7037036, [41 66] 13.888889, [42 67] 13.888889, [41 98] 14.814815, [43 68] 13.888889, [42 99] 14.814815, [24 81] 3.7037036, [25 82] 3.7037036, [26 83] 3.7037036, [41 67] 13.888889, [42 68] 13.888889, [41 99] 14.814815, [23 81] 3.7037036, [24 82] 3.7037036, [25 83] 3.7037036, [26 84] 3.7037036, [41 68] 13.888889, [22 81] 3.7037036, [23 82] 3.7037036, [24 83] 3.7037036, [25 84] 3.7037036, [26 85] 3.7037036, [21 81] 3.7037036, [22 82] 3.7037036, [23 83] 3.7037036, [24 84] 3.7037036, [25 85] 3.7037036, [26 86] 3.7037036, [21 82] 3.7037036, [22 83] 3.7037036, [23 84] 3.7037036, [24 85] 3.7037036, [25 86] 3.7037036, [26 87] 3.7037036, [21 83] 3.7037036, [22 84] 3.7037036, [23 85] 3.7037036, [24 86] 3.7037036, [25 87] 3.7037036, [26 88] 3.7037036}
 
         alloc-1 (allocator-alg1 task->component
                   task->usage ltask+rtask->IPC load-con available-nodes

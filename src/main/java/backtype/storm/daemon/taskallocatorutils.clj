@@ -282,7 +282,8 @@
 
         l-root (@comp->root left)
         r-root (@comp->root right)
-        root-ipc (@lcomp+rcomp->IPC [l-root r-root])
+        root-ipc (or (@lcomp+rcomp->IPC [l-root r-root])
+                   (@lcomp+rcomp->IPC [r-root l-root]))
 
         l-count (count (@component->task l-root))
         r-count (count (@component->task r-root))]
@@ -328,6 +329,35 @@
     (log-message "estimate-ipc-gain-0: MBS-fit-cnt " MBS-fit-cnt)
 
     (* single-pair-ipc (* MBS-fit-cnt (* MBS-fit-cnt l-prop)))
+    ))
+
+(defn total-vertex-ipc [allocator-data centroid vertex]
+  (let [lcomp+rcomp->IPC (:lcomp+rcomp->IPC allocator-data)
+        comp->cluster (:comp->cluster allocator-data)]
+    (reduce +
+      (for [[[l r] ipc] @lcomp+rcomp->IPC
+            :let [c-exists? (or (= l vertex)(= r vertex))
+                  other (if (= l vertex) r l)
+                  dont-add? (or (contains? @comp->cluster (str "@" other))
+                              (= other centroid))]
+            ]
+        (if c-exists?
+          (if-not dont-add? ipc 0)
+          0)))
+    ))
+
+(defn estimate-ipc-gain-centroid [allocator-data alloc to-alloc
+                              alloc-tasks to-alloc-tasks capacity]
+  ;(print alloc " " to-alloc " " alloc-tasks " " to-alloc-tasks " " capacity "\n")
+  (let [task->usage (:task->usage allocator-data)
+
+        alloc-tasks-cnt (count alloc-tasks)
+        to-alloc-task-size (task->usage (first to-alloc-tasks))
+        num-fit (min
+                  (floor (float (/ capacity to-alloc-task-size)))
+                  (count to-alloc-tasks))
+        single-pair-ipc (calc-single-pair-ipc allocator-data alloc to-alloc)]
+    (* single-pair-ipc (* alloc-tasks-cnt num-fit))
     ))
 
 (defn estimate-ipc-gain-one-alloc [allocator-data left right]
