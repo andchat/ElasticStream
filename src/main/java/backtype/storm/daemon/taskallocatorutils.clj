@@ -365,41 +365,54 @@
         cluster->cap (:cluster->cap allocator-data)
         component->task (:component->task allocator-data)
         task->usage (:task->usage allocator-data)
+        allocation (:allocation allocator-data)
+        comp->root (:comp->root allocator-data)
 
-        allocated (if (contains? @comp->cluster left) left right)
+        r-cluster (or (@comp->cluster right)(@comp->cluster (str "@" right)))
+        l-cluster (or (@comp->cluster left)(@comp->cluster (str "@" left)))
+
+        allocated (if l-cluster left right)
+        a-cluster (if l-cluster l-cluster r-cluster)
         alloc-tasks-cnt (count (@component->task allocated))
         to-alloc (if (= allocated left) right left)
         to-alloc-tasks (@component->task to-alloc)
         to-alloc-task-size (task->usage (first to-alloc-tasks))
-        capacity (.find cluster->cap (@comp->cluster allocated))
-        num-fit (min
-                    (floor (float (/ capacity to-alloc-task-size)))
-                    (count to-alloc-tasks))
+
+        fit-fn (fn [cluster]
+                 (min
+                   (floor (float (/ (.find cluster->cap cluster) to-alloc-task-size)))
+                   (count to-alloc-tasks)))
+       
         single-pair-ipc (calc-single-pair-ipc allocator-data left right)]
     (log-message "estimate-ipc-gain-1: allocated " allocated)
     (log-message "estimate-ipc-gain-1: alloc-tasks-cnt " alloc-tasks-cnt)
     (log-message "estimate-ipc-gain-1: to-alloc " to-alloc)
     (log-message "estimate-ipc-gain-1: to-alloc-tasks " to-alloc-tasks)
     (log-message "estimate-ipc-gain-1: to-alloc-task-size " to-alloc-task-size)
-    (log-message "estimate-ipc-gain-1: capacity " capacity)
-    (log-message "estimate-ipc-gain-1: num-fit " num-fit)
+    ;(log-message "estimate-ipc-gain-1: capacity " capacity)
+    ;(log-message "estimate-ipc-gain-1: num-fit " num-fit)
     (log-message "estimate-ipc-gain-1: single-pair-ipc " single-pair-ipc)
-
-    (* single-pair-ipc (* alloc-tasks-cnt num-fit))
+    ;(print a-cluster " " @allocation "\n")
+    (if-not (vector? a-cluster)
+      (* single-pair-ipc (* alloc-tasks-cnt (fit-fn a-cluster)))
+      (apply max
+        (for [c a-cluster :let [cnt (count 
+                                      ((@allocation c)(@comp->root allocated)))]]
+          (* single-pair-ipc (* cnt (fit-fn c))))))
     ))
 
 (defn estimate-ipc-gain [allocator-data left right]
   (let [comp->cluster (:comp->cluster allocator-data)
-        component->task (:component->task allocator-data)]
+        component->task (:component->task allocator-data)
+        r-cluster (or (@comp->cluster right)(@comp->cluster (str "@" right)))
+        l-cluster (or (@comp->cluster left)(@comp->cluster (str "@" left)))]
     (cond
       (or (nil? left)(nil? right)) 0
       (or (= (count (@component->task left)) 0)(= (count (@component->task right)) 0)) 0
-      (and ((complement contains?) @comp->cluster right)
-        ((complement contains?) @comp->cluster left)) (estimate-ipc-gain-none-alloc
-                                                        allocator-data left right)
-      (or (contains? @comp->cluster right)
-        (contains? @comp->cluster left)) (estimate-ipc-gain-one-alloc
-                                           allocator-data left right)
+      (and (nil? r-cluster)(nil? l-cluster)) (estimate-ipc-gain-none-alloc
+                                               allocator-data left right)
+      (or r-cluster l-cluster) (estimate-ipc-gain-one-alloc
+                                 allocator-data left right)
       :else 0)
     ))
 
@@ -582,3 +595,24 @@
     (if-not (contains? splits s)
       s
       (recur (str s ".2")))))
+
+;(defn handle-splits [allocator-data l r IPC]
+;  (let [splits (:splits allocator-data)
+;        comp->cluster (:comp->cluster allocator-data)
+;        s-l? (contains? @splits l) ; partly allocated vertices
+;        s-r? (contains? @splits r) ; partly allocated vertices
+;        l-alloc? (contains? @comp->cluster (str "@" l))
+;        r-alloc? (contains? @comp->cluster (str "@" r))
+;        l? (or s-l? ((complement contains?) @comp->cluster (str "@" l)))
+;        r? (or s-r? ((complement contains?) @comp->cluster (str "@" r)))
+;        l-s (if l? (str l ".2") l)
+;        r-s (if r? (str r ".2") r)]
+;    (cond
+;        (and s-l? s-r?) 0 ; means both are partly allocated! just resolve splits and continue
+;        (and (= c l-s) r?)(allocate-centroid allocator-data l-s r) ; nothing special here
+;        (and (= c r-s) l?)(allocate-centroid allocator-data r-s l) ; nothing special here
+;       (and (= c l-s) l?) 0; calc-initial the rest c, and then
+;        (and (= c r-s) r?) 0
+;        :else -1 ; if none is splitted we do nothing in here
+;      )
+;    ))
