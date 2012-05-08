@@ -1,7 +1,3 @@
-; TODO: fuse triange problem?
-; TODO: When breaking links we should have a datastructure for
-;       avoiding reinserting duplicate vertices - OK
-; TODO: Handling the reduced IPC after the splitting problem - OK
 ; Assumption 1 No state to mitigate
 
 (ns backtype.storm.daemon.task_allocator
@@ -15,6 +11,7 @@
 
 (bootstrap)
 (declare split-both)
+;(declare allocate-centroid)
 
 ; constant
 (defn fuse [allocator-data destination vertex-usage left right]
@@ -95,27 +92,6 @@
          s1-right (first (s :right))
          s2-right (second (s :right))
 
-         ;usage-sum (atom 0)
-         
-         ;splits-set(apply merge-with merge
-         ;            (for [[k v] min-bal-splits
-         ;                  :let [split-size (splits-usage k)]]
-         ;              (if (<= (+ @usage-sum split-size) capacity)
-         ;                (do
-         ;                  (swap! usage-sum (partial + split-size))
-         ;                  {1 {k v}})
-         ;                {2 {k v}}
-         ;                ))) ; linear to the number of splits
-         ;l-cnt (count (@component->task left))
-         ;r-cnt (count (@component->task right))
-         ;l-fn (if (< l-cnt r-cnt) keys vals)
-         ;r-fn (if (= l-fn vals) keys vals)
-
-         ;s1-left (get-split-tasks splits-set 1 l-fn)
-         ;s1-right (get-split-tasks splits-set 1 r-fn)
-         ;s2-left (get-split-tasks splits-set 2 l-fn)
-         ;s2-right (get-split-tasks splits-set 2 r-fn)
-
          is-l-split? (> (count s2-left) 0)
          is-r-split? (> (count s2-right) 0)
 
@@ -184,13 +160,6 @@
                       left (str right ".1"))
         is-l-split? (fuse allocator-data destination @comp->usage
                       (str left ".1") right))
-
-      ;      (if (fits? allocator-data (.top cluster->cap) @comp->usage
-      ;            (str left ".2") (str right ".2"))
-      ;        (fuse allocator-data (.top cluster->cap) @comp->usage
-      ;          (str left ".2") (str right ".2")) ; constant
-      ;        (split-both allocator-data (str left ".2") (str right ".2")
-      ;          (.top cluster->cap)))
 
       (when linear-edge-update?
         (reset-queue! allocator-data)))
@@ -759,12 +728,6 @@
     (log-message "apply-alloc:comp->usage:" (pr-str @comp->usage))
     (log-message "apply-alloc:comp->root:" (pr-str @comp->root))
 
-    ;(doall
-    ;  (for [d (keys cand-alloc) t (apply concat (vals (cand-alloc d)))]
-    ;    (do
-    ;      (swap! comp->cluster assoc-in [t] d)
-    ;      (swap! cluster->comp update-in [d] into [t]))))
-
     (reset! allocation (merge @allocation cand-alloc))
 
     (doall
@@ -774,80 +737,14 @@
                                         (get @comp->cluster (str "@" c)))))]]
         (do
           (swap! comp->cluster assoc-in [(str "@" (@comp->root c))] clusters)
+          (when-not (= c (@comp->root c))
+            (swap! comp->cluster assoc-in [(str "@" c)] clusters))
           (when (contains? @splits c)
             (swap! comp->cluster assoc-in [(str "@" c ".1")] clusters)))))
 
     (log-message "apply-alloc:comp->cluster:" (pr-str comp->cluster))
     (log-message "apply-alloc:cluster->comp:" (pr-str cluster->comp))
     (log-message "apply-alloc:allocation:" (pr-str @allocation))
-    ))
-
-(defn calc-initial-spread [allocator-data left right]
-  (let [component->task (:component->task allocator-data)
-        comp->cluster (:comp->cluster allocator-data)
-        task->usage (:task->usage allocator-data)
-        cluster->cap (:cluster->cap allocator-data)
-        allocation (:allocation allocator-data)
-        comp->root (:comp->root allocator-data)
-
-        l-root (@comp->root left)
-        r-root (@comp->root right)
-        
-        cand-des (atom {})
-        cand-alloc (atom @allocation)
-
-        more-tasks? (atom true)
-
-        s2-left (atom (@component->task left))
-        s2-right (atom (@component->task right))
-
-        l-usage (task->usage (first @s2-left))
-        r-usage (task->usage (first @s2-right))
-
-        alloc-fn (fn [d c l-t r-t]
-                   (when-not (or (empty? l-t)(empty? r-t))
-                     (swap! cand-alloc update-in [d]
-                       (partial merge-with into) {l-root l-t})
-                     (swap! cand-alloc update-in [d]
-                       (partial merge-with into) {r-root r-t})
-                     (swap! cand-des update-in [d] (fn[_] c))
-                     (.remove cluster->cap d)))
-
-        usage-fn (fn [l r l-u r-u]
-                    (+ (* l-u (count l))(* r-u (count r))))
-        ]
-    (while @more-tasks?
-      (let [destination (.top cluster->cap)
-            capacity (.find cluster->cap destination)
-            _(log-message "initial-spread:l" @s2-left " r" @s2-right " lu" l-usage " lr" r-usage)
-            split-usage (usage-fn @s2-left @s2-right l-usage r-usage)]
-        (if (t-fit? allocator-data @s2-left @s2-right capacity)
-          (do
-            (swap! more-tasks? (fn[_]false))
-            (alloc-fn destination (- capacity split-usage) @s2-left @s2-right)
-            (log-message "initial-spread:finish " @s2-left " " @s2-right " " capacity)
-            (log-message "initial-spread:finish " (pr-str @allocation))
-            (log-message "initial-spread:finish " (.toTree cluster->cap))
-            (log-message "initial-spread:finish " (pr-str @comp->cluster)))
-          (let [s (calc-splits allocator-data destination @s2-left @s2-right)
-                s1-left (first (s :left))
-                s1-right (first (s :right))
-                _(log-message "initial-spread:" s1-left " " s1-right " " @s2-left " " @s2-right)
-                split-usage (usage-fn s1-left s1-right l-usage r-usage)]
-            (if-not (or (empty? s1-left)(empty? s1-right))
-              (do
-                (reset! s2-left [])
-                (reset! s2-right [])
-                (swap! s2-left into (second (s :left)))
-                (swap! s2-right into (second (s :right)))
-                (alloc-fn destination (- capacity split-usage) s1-left s1-right)
-                (log-message "initial-spread:" s1-left " " s1-right " " capacity)
-                (log-message "initial-spread:" (pr-str @allocation))
-                (log-message "initial-spread:" (.toTree cluster->cap))
-                (log-message "initial-spread:" (pr-str @comp->cluster)))
-              (swap! more-tasks? (fn[_]false)))          ; finish
-            ))))
-    (apply-alloc allocator-data @cand-alloc @cand-des)
     ))
 
 (defn calc-candidate-alloc [allocator-data initial-spread destinations
@@ -869,11 +766,7 @@
     (while (and (>= @index 0) (< @assigned (count next-t)))
       (let [d-id (first (nth s-destinations @index))
             d-cap (@cand-des d-id)
-            ;d-id (first d)
-            ;d-cap (second d)
-
             cnt @assigned
-
             t-fit (min
                     (floor (float (/ d-cap next-usage)))
                     (- (count next-t) cnt))]
@@ -891,16 +784,8 @@
 ;      (log-message "cand-alloc**********************")
 
       (if-not (= (+ cnt t-fit) (count next-t))
-        ;(do
-        ;  (swap! res-des assoc-in [d-id] (@cand-des d-id))
-        ;  (swap! cand-des dissoc d-id))
         (swap! index dec))
       ))
-    ;(doall
-    ;  (map (fn[[k v]]
-    ;         (swap! res-des assoc-in [k] v))
-    ;    @cand-des))
-
       [@cand-alloc @cand-des
        (alloc-ipc-gain allocator-data centroid @cand-alloc)]
     ))
@@ -935,12 +820,7 @@
                                                     allocator-data centroid vertex
                                                     c-tasks v-tasks cap)]]
                                [d priority]))))
-        ;s-destinations (atom (doall
-        ;                       (for [d (sort > clusters)]
-        ;                         [d 0])))
-
-        ;_ (print @s-destinations "\n")
-        
+       
         initial-spread (apply merge
                          (doall
                            (for [d (sort < clusters)]
@@ -990,21 +870,13 @@
                (float (/ total-ipc cur-ipc))
                1000)
         spread? (<= prop 0.05)
-        ;spread? false
+        ;spread? true
         ]
-    ;(print "centroid:" centroid "\n")
-    ;(print "vertex:" vertex "\n")
     (log-message "lcomp+rcomp->IPC:" @lcomp+rcomp->IPC)
-
     (log-message "destinations:" (pr-str @destinations))
     (log-message "initial-spread:" (pr-str initial-spread))
-
     (log-message "alloc:" (pr-str @best-alloc))
-    ;(print "spread:" spread? " " prop " " cur-ipc " " total-ipc "\n")
 
-;    (print "lala:" last-des "\n")
-;    (print "lala:" (pr-str initial-spread) "\n")
-;    (print "lala:" (pr-str destinations) "\n")
     (while (and @more-allocs? spread?)
       (let [k (nth (keys initial-spread) @index)
 
@@ -1088,6 +960,88 @@
     (apply-alloc allocator-data (first @best-alloc) (second @best-alloc))
     ))
 
+(defn calc-initial-spread [allocator-data left right]
+  (let [component->task (:component->task allocator-data)
+        comp->cluster (:comp->cluster allocator-data)
+        task->usage (:task->usage allocator-data)
+        cluster->cap (:cluster->cap allocator-data)
+        allocation (:allocation allocator-data)
+        comp->root (:comp->root allocator-data)
+
+        l-root (@comp->root left)
+        r-root (@comp->root right)
+        l-s? (not= left l-root)
+        r-s? (not= right r-root)
+        l-s? (if-not (and l-s? r-s?) l-s? false)
+        r-s? (if-not (and l-s? r-s?) r-s? false)
+
+        cand-des (atom {})
+        cand-alloc (atom @allocation)
+
+        more-tasks? (atom true)
+
+        s2-left (atom (@component->task left))
+        s2-right (atom (@component->task right))
+
+        l-usage (task->usage (first @s2-left))
+        r-usage (task->usage (first @s2-right))
+
+        alloc-fn (fn [d c l-t r-t]
+                   (when-not (or (empty? l-t)(empty? r-t))
+                     (when-not r-s?
+                       (swap! cand-alloc update-in [d]
+                         (partial merge-with into) {l-root l-t}))
+                     (when-not l-s?
+                       (swap! cand-alloc update-in [d]
+                         (partial merge-with into) {r-root r-t}))
+                     (swap! cand-des update-in [d] (fn[_] c))
+                     (.remove cluster->cap d)))
+
+        usage-fn (fn [l r l-u r-u]
+                    (+ (* l-u (count l))(* r-u (count r))))
+        ]
+    (while @more-tasks?
+      (let [destination (.top cluster->cap)
+            capacity (.find cluster->cap destination)
+            l-t (if-not r-s? @s2-left [])
+            r-t (if-not l-s? @s2-right [])
+            _(log-message "initial-spread:l" @s2-left " r" @s2-right " lu" l-usage " lr" r-usage)
+            split-usage (usage-fn l-t r-t l-usage r-usage)]
+        (if (t-fit? allocator-data @s2-left @s2-right capacity)
+          (do
+            (swap! more-tasks? (fn[_]false))
+            (alloc-fn destination (- capacity split-usage) @s2-left @s2-right)
+            (log-message "initial-spread:finish " @s2-left " " @s2-right " " capacity)
+            (log-message "initial-spread:finish " (pr-str @allocation))
+            (log-message "initial-spread:finish " (.toTree cluster->cap))
+            (log-message "initial-spread:finish " (pr-str @comp->cluster)))
+          (let [s (calc-splits allocator-data destination @s2-left @s2-right)
+                s1-left (first (s :left))
+                s1-right (first (s :right))
+                _(log-message "initial-spread:" s1-left " " s1-right " " @s2-left " " @s2-right)
+                l-t (if-not r-s? s1-left [])
+                r-t (if-not l-s? s1-right [])
+                split-usage (usage-fn l-t r-t l-usage r-usage)]
+            (if-not (or (empty? s1-left)(empty? s1-right))
+              (do
+                (reset! s2-left [])
+                (reset! s2-right [])
+                (swap! s2-left into (second (s :left)))
+                (swap! s2-right into (second (s :right)))
+                (alloc-fn destination (- capacity split-usage) s1-left s1-right)
+                (log-message "initial-spread:" s1-left " " s1-right " " capacity)
+                (log-message "initial-spread:" (pr-str @allocation))
+                (log-message "initial-spread:" (.toTree cluster->cap))
+                (log-message "initial-spread:" (pr-str @comp->cluster)))
+              (swap! more-tasks? (fn[_]false)))          ; finish
+            ))))
+    (apply-alloc allocator-data @cand-alloc @cand-des)
+    (cond
+        (and l-s? r-s?) nil
+        l-s? (allocate-centroid allocator-data l-root right)
+        r-s? (allocate-centroid allocator-data r-root left))
+    ))
+
 (defnk allocator-alg3 [task->component task->usage ltask+rtask->IPC load-con available-nodes]
   (let [allocator-data (mk-allocator-data task->component
                          task->usage ltask+rtask->IPC load-con available-nodes
@@ -1145,7 +1099,7 @@
               r (second pair)
               l? ((complement contains?) @comp->cluster (str "@" l))
               r? ((complement contains?) @comp->cluster (str "@" r))]
-          (log-message "pair:" l " " r)
+          ;(print "pair:" l " " r "\n")
           (cond
             (is-splitted? allocator-data l r) (resolve-splits! allocator-data l r IPC)
             (and l? r?) (calc-initial-spread allocator-data l r)
@@ -1186,7 +1140,7 @@
         ;                   (map (fn[[a1 a2]] a2)
         ;                     (vals supervisor-ids->task-usage)));linear
 
-        load-con 1.56
+        load-con 0.82
         available-nodes 10
 task->component {32 3, 64 6, 33 3, 65 6, 34 3, 66 6, 67 6, 68 6, 41 4, 42 4, 11 1, 43 4, 12 1, 44 4, 13 1, 45 4, 14 1, 46 4, 15 1, 47 4, 16 1, 48 4, 49 4, 51 5, 52 5, 21 2, 53 5, 22 2, 54 5, 23 2, 55 5, 24 2, 56 5, 25 2, 57 5, 26 2, 58 5, 61 6, 62 6, 31 3, 63 6}
 task->usage {32 20.0, 64 1.25, 33 20.0, 65 1.25, 34 20.0, 66 1.25, 67 1.25, 68 1.25, 41 5.5555553, 42 5.5555553, 11 2.5, 43 5.5555553, 12 2.5, 44 5.5555553, 13 2.5, 45 5.5555553, 14 2.5, 46 5.5555553, 15 2.5, 47 5.5555553, 16 2.5, 48 5.5555553, 49 5.5555553, 51 3.75, 52 3.75, 21 4.1666665, 53 3.75, 22 4.1666665, 54 3.75, 23 4.1666665, 55 3.75, 24 4.1666665, 56 3.75, 25 4.1666665, 57 3.75, 26 4.1666665, 58 3.75, 61 1.25, 62 1.25, 31 20.0, 63 1.25}
