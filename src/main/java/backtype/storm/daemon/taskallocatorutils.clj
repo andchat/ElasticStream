@@ -295,40 +295,30 @@
         task->usage (:task->usage allocator-data)
         component->task (:component->task allocator-data)
 
-        capacity (.find cluster->cap (.top cluster->cap))
+        destination (.top cluster->cap)
 
         l-tasks (@component->task left)
         r-tasks (@component->task right)
 
-        smaller (if (< (count l-tasks) (count r-tasks)) left right)
-        larger (if (= smaller left) right left)
+        ret (calc-splits allocator-data destination l-tasks r-tasks)
 
-        s-tasks (@component->task smaller)
-        l-tasks (@component->task larger)
-
-        s-usage (task->usage (first s-tasks))
-        l-usage (task->usage (first l-tasks))
-
-        l-prop (float (/ (count l-tasks) (count s-tasks)))
+        l-cnt (count (first (ret :left)))
+        r-cnt (count (first (ret :right)))
 
         single-pair-ipc (calc-single-pair-ipc allocator-data left right)
-
-        MBS-usage (+ s-usage (* l-usage l-prop))
-        MBS-fit-cnt (min
-                      (floor (float (/ capacity MBS-usage)))
-                      (count s-tasks))]
-    (log-message "estimate-ipc-gain-0: smaller " smaller)
-    (log-message "estimate-ipc-gain-0: larger " larger)
-    (log-message "estimate-ipc-gain-0: s-tasks " s-tasks)
-    (log-message "estimate-ipc-gain-0: l-tasks " l-tasks)
-    (log-message "estimate-ipc-gain-0: s-usage " s-usage)
-    (log-message "estimate-ipc-gain-0: l-usage " l-usage)
-    (log-message "estimate-ipc-gain-0: l-prop " l-prop)
+        ]
+    ;(log-message "estimate-ipc-gain-0: smaller " smaller)
+    ;(log-message "estimate-ipc-gain-0: larger " larger)
+    ;(log-message "estimate-ipc-gain-0: s-tasks " s-tasks)
+    ;(log-message "estimate-ipc-gain-0: l-tasks " l-tasks)
+    ;(log-message "estimate-ipc-gain-0: s-usage " s-usage)
+    ;(log-message "estimate-ipc-gain-0: l-usage " l-usage)
+    ;(log-message "estimate-ipc-gain-0: l-prop " l-prop)
     (log-message "estimate-ipc-gain-0: single-pair-ipc " single-pair-ipc)
-    (log-message "estimate-ipc-gain-0: MBS-usage " MBS-usage)
-    (log-message "estimate-ipc-gain-0: MBS-fit-cnt " MBS-fit-cnt)
+    ;(log-message "estimate-ipc-gain-0: MBS-usage " MBS-usage)
+    ;(log-message "estimate-ipc-gain-0: MBS-fit-cnt " MBS-fit-cnt)
 
-    (* single-pair-ipc (* MBS-fit-cnt (* MBS-fit-cnt l-prop)))
+    (* single-pair-ipc l-cnt r-cnt)
     ))
 
 (defn total-vertex-ipc [allocator-data centroid vertex]
@@ -336,14 +326,15 @@
         comp->cluster (:comp->cluster allocator-data)]
     (reduce +
       (for [[[l r] ipc] @lcomp+rcomp->IPC
-            :let [c-exists? (or (= l vertex)(= r vertex))
+            :let [v-exists? (or (= l vertex)(= r vertex))
                   other (if (= l vertex) r l)
-                  dont-add? (or (contains? @comp->cluster (str "@" other))
-                              (= other centroid))]
+                  ;dont-add? (or (contains? @comp->cluster (str "@" other))
+                  ;            (= other centroid))
+                  dont-add? (= other centroid)]
             ]
-        (if c-exists?
-          (if-not dont-add? ipc 0)
-          0)))
+        (if v-exists?
+            (if-not dont-add? ipc 0)
+            0)))
     ))
 
 (defn estimate-ipc-gain-centroid [allocator-data alloc to-alloc
@@ -595,6 +586,61 @@
     (if-not (contains? splits s)
       s
       (recur (str s ".2")))))
+
+(defn merge-clusters! [allocator-data l-cluster r-cluster]
+  (let [comp->cluster (:comp->cluster allocator-data)
+        cluster->comp (:cluster->comp allocator-data)
+        cluster->cap (:cluster->cap allocator-data)
+        load-constraint (:load-constraint allocator-data)
+        node-capacity (:node-capacity allocator-data)
+        allocation (:allocation allocator-data)
+
+        l-cap (.find cluster->cap l-cluster)
+        r-cap (.find cluster->cap r-cluster)
+        total-cap (* node-capacity load-constraint)
+
+        l-usage (- total-cap l-cap)
+        r-usage (- total-cap r-cap)
+
+        r-vals (@allocation r-cluster)
+        tmp-alloc (dissoc (dissoc @allocation r-cluster) l-cluster)
+
+        new-l {l-cluster (merge-with into r-vals (@allocation l-cluster))}
+        new-alloc (merge new-l tmp-alloc)
+
+        new-comp->cluster(apply merge-with into
+                           (for [des new-alloc comps (keys (second des))]
+                             {(str "@" comps) [(first des)]}))
+        ]
+    (when (not= l-cluster r-cluster)
+      ;(log-message "(+ l-usage r-usage)" (+ l-usage r-usage))
+      (when (<= (+ l-usage r-usage) total-cap)
+        ;(print "merge cluster:allowed:" l-cluster " " r-cluster "\n")
+        ;(print "merge cluster:allowed:" (pr-str @allocation) "\n")
+        ;(print "merge cluster:allowed:" (pr-str new-alloc) "\n")
+        ;(print "merge cluster:allowed:" (pr-str comp->cluster) "\n")
+        ;(print "merge cluster:allowed:" (pr-str new-comp->cluster) "\n")
+        (reset! allocation new-alloc)
+        (reset! comp->cluster new-comp->cluster)
+
+        (swap! cluster->comp dissoc-in [r-cluster])
+        (.remove cluster->cap r-cluster)
+        (.insert cluster->cap r-cluster total-cap)
+
+        (.remove cluster->cap l-cluster)
+        (.insert cluster->cap l-cluster (- total-cap (+ l-usage r-usage)))
+
+        (log-message "Merge clusters:" l-cluster " " r-cluster)
+        (log-message "cluster->comp:" @cluster->comp)
+        (log-message "allocation:" @allocation)
+        (log-message "cluster->cap:" (.toTree cluster->cap))
+        ))))
+
+(defn merge-clusters [allocator-data l-cluster r-cluster]
+    ;(print "merge cluster:" l-cluster " " r-cluster "\n")
+    (when (and (= 1 (count l-cluster)) (= 1 (count r-cluster)))
+      (merge-clusters! allocator-data (first l-cluster) (first r-cluster))
+      ))
 
 ;(defn handle-splits [allocator-data l r IPC]
 ;  (let [splits (:splits allocator-data)

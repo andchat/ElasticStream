@@ -618,61 +618,6 @@
        (.toTree cluster->cap)])
     ))
 
-(defn merge-clusters! [allocator-data l-cluster r-cluster]
-  (let [comp->cluster (:comp->cluster allocator-data)
-        cluster->comp (:cluster->comp allocator-data)
-        cluster->cap (:cluster->cap allocator-data)
-        load-constraint (:load-constraint allocator-data)
-        node-capacity (:node-capacity allocator-data)
-        allocation (:allocation allocator-data)
-
-        l-cap (.find cluster->cap l-cluster)
-        r-cap (.find cluster->cap r-cluster)
-        total-cap (* node-capacity load-constraint)
-
-        l-usage (- total-cap l-cap)
-        r-usage (- total-cap r-cap)
-
-        r-vals (@allocation r-cluster)
-        tmp-alloc (dissoc (dissoc @allocation r-cluster) l-cluster)
-
-        new-l {l-cluster (merge-with into r-vals (@allocation l-cluster))}
-        new-alloc (merge new-l tmp-alloc)
-
-        new-comp->cluster(apply merge-with into
-                           (for [des new-alloc comps (keys (second des))]
-                             {(str "@" comps) [(first des)]}))
-        ]
-    (when (not= l-cluster r-cluster)
-      ;(log-message "(+ l-usage r-usage)" (+ l-usage r-usage))
-      (when (<= (+ l-usage r-usage) total-cap)
-        ;(print "merge cluster:allowed:" l-cluster " " r-cluster "\n")
-        ;(print "merge cluster:allowed:" (pr-str @allocation) "\n")
-        ;(print "merge cluster:allowed:" (pr-str new-alloc) "\n")
-        ;(print "merge cluster:allowed:" (pr-str comp->cluster) "\n")
-        ;(print "merge cluster:allowed:" (pr-str new-comp->cluster) "\n")
-        (reset! allocation new-alloc)
-        (reset! comp->cluster new-comp->cluster)
-
-        (swap! cluster->comp dissoc-in [r-cluster])
-        (.remove cluster->cap r-cluster)
-        (.insert cluster->cap r-cluster total-cap)
-
-        (.remove cluster->cap l-cluster)
-        (.insert cluster->cap l-cluster (- total-cap (+ l-usage r-usage)))
-
-        (log-message "Merge clusters:" l-cluster " " r-cluster)
-        (log-message "cluster->comp:" @cluster->comp)
-        (log-message "allocation:" @allocation)
-        (log-message "cluster->cap:" (.toTree cluster->cap))
-        ))))
-
-(defn merge-clusters [allocator-data l-cluster r-cluster]
-    ;(print "merge cluster:" l-cluster " " r-cluster "\n")
-    (when (and (= 1 (count l-cluster)) (= 1 (count r-cluster)))
-      (merge-clusters! allocator-data (first l-cluster) (first r-cluster))
-      ))
-
 (defn apply-alloc [allocator-data cand-alloc cand-des]
   (let [cluster->cap (:cluster->cap allocator-data)
         component->task (:component->task allocator-data)
@@ -797,8 +742,11 @@
         comp->cluster (:comp->cluster allocator-data)
         allocation (:allocation allocator-data)
         component->task (:component->task allocator-data)
+        comp->root (:comp->root allocator-data)
 
-        ;ret (calc-initial-spread allocator-data centroid (.poll centroid-queue))
+        c-root (@comp->root centroid)
+        v-root (@comp->root vertex)
+
         clusters (@comp->cluster (str "@" centroid))
         destinations (atom (apply merge
                              (doall
@@ -836,9 +784,7 @@
 
         last-des (last (keys initial-spread))
         last-des? (atom (if (>(count clusters) 1) true false))
-        ;last-des? false
         new-node? (atom (if @last-des? false true))
-        ;spread-cnt (count initial-spread)
         spread-cnt (if @last-des?
                      (dec (count initial-spread))
                      (count initial-spread))
@@ -863,9 +809,9 @@
                            (reset-last-des-fn)
                            (.remove cluster->cap next-node)))))
 
-        total-ipc (total-vertex-ipc allocator-data centroid vertex)
-        cur-ipc (or (@lcomp+rcomp->IPC [centroid vertex])
-                  (@lcomp+rcomp->IPC [vertex centroid]))
+        total-ipc (total-vertex-ipc allocator-data c-root v-root)
+        cur-ipc (or (@lcomp+rcomp->IPC [c-root v-root])
+                  (@lcomp+rcomp->IPC [v-root c-root]))
         prop (if (and total-ipc cur-ipc)
                (float (/ total-ipc cur-ipc))
                1000)
@@ -891,11 +837,6 @@
 
             next-tasks (or (get (get @cur-spread next-node) centroid) [])
 
-            ;_ (log-message "alloc-centroid:k:" k " cur-spread:"
-            ;    (pr-str @cur-spread) " next-node:" next-node " next-tasks:" next-tasks
-            ;    " n-alloc:" n-alloc " c-tasks:" c-tasks " capacity:" capacity
-            ;    "k-capacity" k-capacity)
-            
             cand-spread (when (> (count c-tasks) 1)
                           (apply merge
                             {k (apply merge
@@ -1132,19 +1073,16 @@
       )))
 
 (defn allocate-tasks [storm-cluster-state supervisor-ids->task-usage]
-  (let [;task->component (get-task->component storm-cluster-state)
-        ;task->usage (apply merge-with +
-        ;              (map (fn[[a1 a2]] a1)
-        ;                (vals supervisor-ids->task-usage))) ; linear
-        ;ltask+rtask->IPC (apply merge-with +
-        ;                   (map (fn[[a1 a2]] a2)
-        ;                     (vals supervisor-ids->task-usage)));linear
+  (let [task->component (get-task->component storm-cluster-state)
+        task->usage (apply merge-with +
+                      (map (fn[[a1 a2]] a1)
+                        (vals supervisor-ids->task-usage))) ; linear
+        ltask+rtask->IPC (apply merge-with +
+                           (map (fn[[a1 a2]] a2)
+                             (vals supervisor-ids->task-usage)));linear
 
-        load-con 0.82
+        load-con 0.9
         available-nodes 10
-task->component {32 3, 64 6, 33 3, 65 6, 34 3, 66 6, 67 6, 68 6, 41 4, 42 4, 11 1, 43 4, 12 1, 44 4, 13 1, 45 4, 14 1, 46 4, 15 1, 47 4, 16 1, 48 4, 49 4, 51 5, 52 5, 21 2, 53 5, 22 2, 54 5, 23 2, 55 5, 24 2, 56 5, 25 2, 57 5, 26 2, 58 5, 61 6, 62 6, 31 3, 63 6}
-task->usage {32 20.0, 64 1.25, 33 20.0, 65 1.25, 34 20.0, 66 1.25, 67 1.25, 68 1.25, 41 5.5555553, 42 5.5555553, 11 2.5, 43 5.5555553, 12 2.5, 44 5.5555553, 13 2.5, 45 5.5555553, 14 2.5, 46 5.5555553, 15 2.5, 47 5.5555553, 16 2.5, 48 5.5555553, 49 5.5555553, 51 3.75, 52 3.75, 21 4.1666665, 53 3.75, 22 4.1666665, 54 3.75, 23 4.1666665, 55 3.75, 24 4.1666665, 56 3.75, 25 4.1666665, 57 3.75, 26 4.1666665, 58 3.75, 61 1.25, 62 1.25, 31 20.0, 63 1.25}
-ltask+rtask->IPC {[49 51] 12.5, [48 51] 12.5, [49 52] 12.5, [47 51] 12.5, [48 52] 12.5, [49 53] 12.5, [46 51] 12.5, [47 52] 12.5, [48 53] 12.5, [49 54] 12.5, [26 31] 33.333332, [45 51] 12.5, [46 52] 12.5, [47 53] 12.5, [48 54] 12.5, [49 55] 12.5, [25 31] 33.333332, [26 32] 33.333332, [34 41] 27.777779, [44 51] 12.5, [45 52] 12.5, [46 53] 12.5, [47 54] 12.5, [48 55] 12.5, [49 56] 12.5, [24 31] 33.333332, [25 32] 33.333332, [26 33] 33.333332, [34 42] 27.777779, [43 51] 12.5, [44 52] 12.5, [45 53] 12.5, [46 54] 12.5, [47 55] 12.5, [48 56] 12.5, [49 57] 12.5, [23 31] 33.333332, [24 32] 33.333332, [25 33] 33.333332, [26 34] 33.333332, [33 41] 27.777779, [34 43] 27.777779, [42 51] 12.5, [43 52] 12.5, [44 53] 12.5, [45 54] 12.5, [46 55] 12.5, [47 56] 12.5, [48 57] 12.5, [49 58] 12.5, [22 31] 33.333332, [23 32] 33.333332, [24 33] 33.333332, [25 34] 33.333332, [32 41] 27.777779, [33 42] 27.777779, [34 44] 27.777779, [41 51] 12.5, [42 52] 12.5, [43 53] 12.5, [44 54] 12.5, [45 55] 12.5, [46 56] 12.5, [47 57] 12.5, [48 58] 12.5, [21 31] 33.333332, [22 32] 33.333332, [23 33] 33.333332, [24 34] 33.333332, [31 41] 27.777779, [32 42] 27.777779, [33 43] 27.777779, [34 45] 27.777779, [41 52] 12.5, [42 53] 12.5, [43 54] 12.5, [44 55] 12.5, [45 56] 12.5, [46 57] 12.5, [47 58] 12.5, [21 32] 33.333332, [22 33] 33.333332, [23 34] 33.333332, [31 42] 27.777779, [32 43] 27.777779, [33 44] 27.777779, [34 46] 27.777779, [41 53] 12.5, [42 54] 12.5, [43 55] 12.5, [44 56] 12.5, [45 57] 12.5, [46 58] 12.5, [21 33] 33.333332, [22 34] 33.333332, [31 43] 27.777779, [32 44] 27.777779, [33 45] 27.777779, [34 47] 27.777779, [41 54] 12.5, [42 55] 12.5, [43 56] 12.5, [44 57] 12.5, [45 58] 12.5, [21 34] 33.333332, [31 44] 27.777779, [32 45] 27.777779, [33 46] 27.777779, [34 48] 27.777779, [41 55] 12.5, [42 56] 12.5, [43 57] 12.5, [44 58] 12.5, [31 45] 27.777779, [32 46] 27.777779, [33 47] 27.777779, [34 49] 27.777779, [68 51] 9.375, [41 56] 12.5, [42 57] 12.5, [43 58] 12.5, [16 31] 8.333333, [31 46] 27.777779, [32 47] 27.777779, [33 48] 27.777779, [67 51] 9.375, [68 52] 9.375, [41 57] 12.5, [42 58] 12.5, [15 31] 8.333333, [16 32] 8.333333, [31 47] 27.777779, [32 48] 27.777779, [33 49] 27.777779, [67 52] 9.375, [68 53] 9.375, [41 58] 12.5, [14 31] 8.333333, [15 32] 8.333333, [16 33] 8.333333, [31 48] 27.777779, [32 49] 27.777779, [66 51] 9.375, [67 53] 9.375, [68 54] 9.375, [13 31] 8.333333, [14 32] 8.333333, [15 33] 8.333333, [16 34] 8.333333, [31 49] 27.777779, [65 51] 9.375, [66 52] 9.375, [67 54] 9.375, [68 55] 9.375, [12 31] 8.333333, [13 32] 8.333333, [14 33] 8.333333, [15 34] 8.333333, [64 51] 9.375, [65 52] 9.375, [66 53] 9.375, [67 55] 9.375, [68 56] 9.375, [11 31] 8.333333, [12 32] 8.333333, [13 33] 8.333333, [14 34] 8.333333, [63 51] 9.375, [64 52] 9.375, [65 53] 9.375, [66 54] 9.375, [67 56] 9.375, [68 57] 9.375, [11 32] 8.333333, [12 33] 8.333333, [13 34] 8.333333, [62 51] 9.375, [63 52] 9.375, [64 53] 9.375, [65 54] 9.375, [66 55] 9.375, [67 57] 9.375, [68 58] 9.375, [11 33] 8.333333, [12 34] 8.333333, [61 51] 9.375, [62 52] 9.375, [63 53] 9.375, [64 54] 9.375, [65 55] 9.375, [66 56] 9.375, [67 58] 9.375, [11 34] 8.333333, [61 52] 9.375, [62 53] 9.375, [63 54] 9.375, [64 55] 9.375, [65 56] 9.375, [66 57] 9.375, [61 53] 9.375, [62 54] 9.375, [63 55] 9.375, [64 56] 9.375, [65 57] 9.375, [66 58] 9.375, [61 54] 9.375, [62 55] 9.375, [63 56] 9.375, [64 57] 9.375, [65 58] 9.375, [61 55] 9.375, [62 56] 9.375, [63 57] 9.375, [64 58] 9.375, [61 56] 9.375, [62 57] 9.375, [63 58] 9.375, [61 57] 9.375, [62 58] 9.375, [61 58] 9.375}
 
         alloc-1 (allocator-alg1 task->component
                   task->usage ltask+rtask->IPC load-con available-nodes
