@@ -188,9 +188,9 @@ comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
 
 (def stocks
   ["ATVI" "ADBE" "AKAM" "ALXN" "ALTR" "AMZN" "AMGN" "APOL" "AAPL" "AMAT" "ADSK" "ADP" "AVGO" "BIDU" "BBBY" "BIIB" "BMC" "BRCM" "CHRW" "CA" "CELG" "CERN" "CHKP" "CSCO" "CTXS"
- "CTSH" "CMCSA" "COST" "CTRP" "DELL" "XRAY" "DTV" "DLTR" "EBAY" "EA" "EXPE" "EXPD" "ESRX" "FFIV" "FAST" "FISV" "FLEX" "FOSL" "GRMN" "GILD" "GOOG" "GMCR" "HSIC" "INFY" "INTC" "INTU"
- "ISRG" "KLAC" "LRCX" "LINTA" "LIFE" "LLTC" "MRVL" "MAT" "MXIM" "MCHP" "MU" "MSFT" "MNST" "MYL" "NTAP" "NFLX" "NWSA" "NUAN" "NVDA" "ORLY" "ORCL" "PCAR" "PAYX" "PRGO" "PCLN" "QCOM"
- "GOLD" "RIMM" "ROST" "SNDK" "STX" "SHLD" "SIAL" "SIRI" "SPLS" "SBUX" "SRCL" "SYMC" "TEVA" "TXN" "VRSN" "VRTX" "VMED" "VOD" "WCRX" "WFM" "WYNN" "XLNX" "YHOO"])
+   "CTSH" "CMCSA" "COST" "CTRP" "DELL" "XRAY" "DTV" "DLTR" "EBAY" "EA" "EXPE" "EXPD" "ESRX" "FFIV" "FAST" "FISV" "FLEX" "FOSL" "GRMN" "GILD" "GOOG" "GMCR" "HSIC" "INFY" "INTC" "INTU"
+   "ISRG" "KLAC" "LRCX" "LINTA" "LIFE" "LLTC" "MRVL" "MAT" "MXIM" "MCHP" "MU" "MSFT" "MNST" "MYL" "NTAP" "NFLX" "NWSA" "NUAN" "NVDA" "ORLY" "ORCL" "PCAR" "PAYX" "PRGO" "PCLN" "QCOM"
+   "GOLD" "RIMM" "ROST" "SNDK" "STX" "SHLD" "SIAL" "SIRI" "SPLS" "SBUX" "SRCL" "SYMC" "TEVA" "TXN" "VRSN" "VRTX" "VMED" "VOD" "WCRX" "WFM" "WYNN" "XLNX" "YHOO"])
 
 (import (java.io BufferedReader FileReader))
 (use '[clojure.string :only (join split)])
@@ -207,20 +207,21 @@ comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
                       dt (split (cols 0) #"T")
                       d (first dt)
                       t (second dt)]]
-          ;(Thread/sleep 5)
-          (when (and (not= @s-date?)(= d "20120515"))
-            (swap! stock-i inc)
-            (println (stocks @stock-i)))
-          (if (= d "20120515")
-            (swap! s-date? (fn[_] true))
-            (swap! s-date? (fn[_] false)))
           (when-not (>= (.indexOf line "time") 0)
+            ;(Thread/sleep 100)
+            (when (and (= @s-date? false)(= d "20120515"))
+              (swap! stock-i inc)
+              (println (stocks @stock-i)))
+            (if (= d "20120515")
+              (swap! s-date? (fn[_] true))
+              (swap! s-date? (fn[_] false)))
+
             ;(.write wrtr (str d " " t " " (stocks @stock-i) " "
             ;           (cols 1) " " (cols 2) "\n"))
             (print (str d " " t " " (stocks @stock-i) " "
-                       (cols 1) " " (cols 2) " " (= d "20120515") " " (= d 20120515)"\n"))
-            )
-          )))
+                     (cols 1) " " (cols 2) "\n"))
+            
+            ))))
     ))
 
 
