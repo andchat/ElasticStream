@@ -70,7 +70,7 @@
 
 (defn test-alloc-multi [task->component task->usage ltask+rtask->IPC load-con end-con available-nodes]
   (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
-    (.write wrtr (str "load-constraint TD-2 Simple-2 Centroid TD Simple TD-imp Best \n"))
+    (.write wrtr (str "load-constraint TD-2 Simple-2 Centroid Simple TD-imp Best \n"))
     (dorun
       (for [l (range (* load-con 100) (+ end-con 2) 2)
             :let [l-dec (double (/ l 100))]
@@ -88,6 +88,9 @@
             :let [alloc-4 (allocator-alg2 task->component
                             task->usage ltask+rtask->IPC l-dec available-nodes
                             :IPC-over-PC? true)]
+            :let [alloc-8 (allocator-alg2 task->component
+                            task->usage ltask+rtask->IPC l-dec available-nodes
+                            )]
             :let [alloc-9 (allocator-alg3 task->component
                             task->usage ltask+rtask->IPC l-dec available-nodes
                             )]
@@ -117,7 +120,7 @@
               (evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-5) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
-              ;(evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-7) ltask+rtask->IPC) " "
               (first best) " "
               ;(evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
@@ -127,7 +130,7 @@
               (count (apply concat (vals (first alloc-9)))) " "
               ;(count (apply concat (vals (first alloc-5)))) " "
               ;(count (apply concat (vals (first alloc-7)))) " "
-              ;(count (apply concat (vals (first alloc-8)))) " "
+              (count (apply concat (vals (first alloc-8)))) " "
               ;(count (apply concat (vals (first alloc-2)))) " "
               ;(count (apply concat (vals (first alloc-7)))) " "
               "\n")))
@@ -135,18 +138,23 @@
   1)
  
 (defnk test [load-con :multi? false]
-  (let [available-nodes  10
-;comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34], 4 [41 42 43 44 45 46 47 48 49], 5 [51 52 53 54 55 56 57 58], 6 [61 62 63 64 65 66 67 68], 7 [71 72 73 74 75 76 77 78]}
-;comp->usage {1 15, 2 25, 3 80, 4 10, 5 30, 6 50, 7 30}
-;comp->IPC {[1 3] 700, [2 3] 300, [4 6] 1000, [5 6] 200, [3 7] 1600, [5 7] 1400}
-comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112], 2 [21 22 23 24 25 26 27 28 29 210 211 212], 3 [31 32 33 34 35 36 37 38 39 310 311 312],
-            4 [41 42 43 44 45 46 47 48 49 410 411 412], 5 [51 52 53 54 55 56 57 58 59 510 511 512],
-            6 [61 62 63 64 65 66 67 68 69 610 611 612], 7 [71 72 73 74 75 76 77 78 79 710 711 712],
-            8 [81 82 83 84 85 86 87 88 89 810 811 812], 9 [91 92 93 94 95 96 97 98 99 910 911 912]}
-comp->usage {1 10, 2 30, 3 70, 4 30, 5 70, 6 80, 7 20, 8 20, 9 10}
-comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
-           [1 8] 300, [2 8] 800, [8 9] 600, [4 9] 400}
+  (let [
+available-nodes  10
+comp->task {1 [11 12 13 14 15], 2 [21 22 23 24 25 26 27 28 29 210 211 212],
+            3 [31 32 33 34 35 36 37 38],
+            4 [41]
+            }
+comp->usage {1 54.771, 3 24.6916, 4 0.052, 2 92.3002}
+comp->IPC {[2 3] 36689.99, [1 2] 20001.43, [3 4] 253.03513}
 
+
+
+
+
+
+;, [5 6] 24855.328
+        ; , 
+        ;, 6 1.814
 
         task->component (apply merge
                           (for [ct comp->task t (second ct)]
@@ -200,10 +208,10 @@ comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
 
 (import (java.io BufferedReader FileReader))
 (use '[clojure.string :only (join split)])
-(use '[clojure.contrib.string :only (chop)])
+(use '[clojure.contrib.string :only (chop blank?)])
 (use 'clojure.java.io)
 
-(defn write-stocks [prefix symbol data]
+(defn write-stocks [folder prefix symbol data]
   (let [cmp-fn (fn [[d1 t1] [d2 t2]]
                  (if (= (Integer/parseInt d1) (Integer/parseInt d2))
                    (> (Integer/parseInt t1) (Integer/parseInt t2))
@@ -211,7 +219,7 @@ comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
 
         s-data (sort cmp-fn data)
         ]
-    (with-open [wrtr (writer (str "/home/andchat/Projects/FinancialData/Trades/" prefix symbol))]
+    (with-open [wrtr (writer (str "/home/andchat/Projects/FinancialData/" folder "/" prefix symbol))]
       (doall
         (for [line s-data]
           (.write wrtr (str (line 0) " " (line 1) " " (line 2) " " (line 3) " " (line 4) "\n"))
@@ -234,7 +242,7 @@ comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
           (when (and (< (.indexOf line "time") 0) (< (.indexOf line "<") 0))
             ;(Thread/sleep 100)
             (when (and (= @s-date? false)(= d "20120515"))
-              (write-stocks "t_" (stocks @stock-i) @data)
+              (write-stocks "Trades" "t_" (stocks @stock-i) @data)
               (swap! stock-i inc)
               (reset! data [])
               (reset! cnt 0)
@@ -253,7 +261,157 @@ comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
                 (println (count @data))
                 (swap! cnt inc))
             ))))
-    (write-stocks "t_" (stocks @stock-i) @data)
+    (write-stocks "Trades" "t_" (stocks @stock-i) @data)
     ))
 
+(defn fin-data-quotes []
+  (let [file-name "/home/andchat/Projects/FinancialData/quotes"
+        stock-i (atom 0)
+        s-date? (atom true)
+        cnt (atom 0)
+        data (atom [])]
+    (with-open [rdr (BufferedReader. (FileReader. file-name))]
+      (doall
+        (for [line (line-seq rdr)
+              :let [cols (split line #"\s")
+                    dt (split (cols 0) #"T")
+                    d (when (= (count dt) 2) (first dt))
+                    t (when (= (count dt) 2) (second dt))]]
+          (when (and (< (.indexOf line "time") 0) (< (.indexOf line "<") 0))
+            ;(Thread/sleep 100)
+            (when (and (= @s-date? false)(= d "20120515"))
+              (write-stocks "Quotes" "q_" (stocks @stock-i) @data)
+              (swap! stock-i inc)
+              (reset! data [])
+              (reset! cnt 0)
+              (println (stocks @stock-i)))
+            (if (= d "20120515")
+              (swap! s-date? (fn[_] true))
+              (swap! s-date? (fn[_] false)))
 
+            ;(when (and (= (stocks @stock-i) "BRCM") (>= @cnt 9))
+            ;  (println line))
+            (when (>= (count cols) 5)
+              (swap! data conj
+                [d t (stocks @stock-i) (cols 4) (cols 5)]))
+
+            (when (< @cnt (int (/ (count @data) 10000)))
+                (println (count @data))
+                (swap! cnt inc))
+            ))))
+    (write-stocks "Quotes" "q_" (stocks @stock-i) @data)
+    ))
+
+(import (java.io BufferedReader FileReader))
+
+(defn merge-files [prefix folder]
+  (let [root (str "/home/andchat/Projects/FinancialData/" folder "/")
+
+        files (into []
+                (map (fn [s]
+                       (BufferedReader. (FileReader. (str root prefix s))))
+                  stocks))
+
+        lines (atom {})
+        continue? (atom true)
+
+        cmp-fn (fn [[d1 t1] [d2 t2]]
+                 (if (= (Integer/parseInt d1) (Integer/parseInt d2))
+                   (> (Integer/parseInt t1) (Integer/parseInt t2))
+                   (> (Integer/parseInt d1) (Integer/parseInt d2))))
+        ]
+
+    (doall
+      (for [i (range (count stocks))]
+        (swap! lines assoc-in [(stocks i)]
+          (split (.readLine (files i)) #"\s"))))
+
+    ;(println (vals @lines))
+
+    (with-open [wrtr (writer (str root "all_" folder))]
+      (while @continue?
+        ;(println (vals @lines))
+        (let [max-line (reduce (fn [s l]
+                                 (cond
+                                    (and s l) (if (cmp-fn [(s 0)(s 1)] [(l 0)(l 1)]) s l)
+                                    l l
+                                    s s
+                                    :else nil))
+                         (vals @lines))
+
+              symbol (when max-line (max-line 2))
+              next-line (when symbol
+                          (.readLine (files (.indexOf stocks symbol))))
+              next-line-v (if-not (blank? next-line)
+                                (split next-line #"\s") nil)
+              ]
+          ;(println max-line)
+          (if-not max-line
+            (swap! continue? (fn [_] false))
+            (do
+              (.write wrtr (str (max-line 0) " " (max-line 1) " "
+                             (max-line 2) " " (max-line 3) " " (max-line 4) "\n"))
+              (swap! lines assoc-in [symbol] next-line-v)
+              ))
+          )))
+    ))
+;(merge "t_" "Trades")
+(def stocks ["ADSK" "ADP" "ADBE"])
+
+
+(defn merge-Q-T []
+  (let [trades "/home/andchat/Projects/FinancialData/Trades/all_Trades2"
+        quotes "/home/andchat/Projects/FinancialData/Quotes/all_Quotes2"
+        res-file "/home/andchat/Projects/FinancialData/Trades/all_Data"
+
+        trades-file (BufferedReader. (FileReader. trades))
+        quotes-file (BufferedReader. (FileReader. quotes))
+
+        continue? (atom true)
+        lines (atom {})
+
+        write-fn (fn [p wrtr l]
+                   (.write wrtr (str p " " (l 0) " " (l 1) " "
+                                 (l 2) " " (l 3) " " (l 4) "\n")))
+        ]
+
+    (swap! lines assoc-in ["Q"]
+          (split (.readLine quotes-file) #"\s"))
+
+    (swap! lines assoc-in ["T"]
+          (split (.readLine trades-file) #"\s"))
+
+    (with-open [wrtr (writer res-file)]
+      (while @continue?
+        (let [t-date (Integer/parseInt (first (@lines "T")))
+              t-time (Integer/parseInt (second (@lines "T")))
+
+              q-date (Integer/parseInt (first (@lines "Q")))
+              q-time (Integer/parseInt (second (@lines "Q")))]
+
+          (cond
+            (< t-date q-date)
+                (do
+                  (write-fn "T" wrtr (@lines "T"))
+                  (swap! lines assoc-in ["T"]
+                    (split (.readLine trades-file) #"\s")))
+            (> t-date q-date)
+                (do
+                  (write-fn "Q" wrtr (@lines "Q"))
+                  (swap! lines assoc-in ["Q"]
+                    (split (.readLine quotes-file) #"\s")))
+            (<= t-time q-time)
+                (do
+                  (write-fn "T" wrtr (@lines "T"))
+                  (swap! lines assoc-in ["T"]
+                    (split (.readLine trades-file) #"\s")))
+            (> t-time q-time)
+                (do
+                  (write-fn "Q" wrtr (@lines "Q"))
+                  (swap! lines assoc-in ["Q"]
+                    (split (.readLine quotes-file) #"\s"))))
+
+          (when (and (nil? (@lines "T"))(nil? (@lines "Q")))
+            (swap! continue? (fn [_] false)))
+          )))
+    ))

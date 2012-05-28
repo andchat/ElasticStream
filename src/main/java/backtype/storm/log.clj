@@ -4,7 +4,8 @@
 ;(defmacro log-message [& args]
 ;  `(print (str ~@args "\n")))
 (defmacro log-message [& args]
-    `(log/info (str ~@args)))
+  `(log/info (str ~@args)))
+    ;`(log/info (str ~@args)))
 
 (defmacro log-error [e & args]
   `(log/error (str ~@args) ~e))

@@ -160,55 +160,24 @@
         ( >= capacity total-usage)))
     ))
 
-(defn calc-splits! [allocator-data destination l-tasks r-tasks]
-  (let [task->usage (:task->usage allocator-data)
-        cluster->cap (:cluster->cap allocator-data)
-        capacity (.find cluster->cap destination)
-
-        is-l-smaller (<= (count l-tasks)(count r-tasks))
-
-        s-tasks (if is-l-smaller l-tasks r-tasks)
-        l-tasks (if is-l-smaller r-tasks l-tasks)
-
-        s-usage (task->usage (first s-tasks))
-        l-usage (task->usage (first l-tasks))
-        ; stage 1 - MBS
-        l-prop (floor (float (/ (count l-tasks) (count s-tasks))))
-
-        MBS-usage (+ s-usage (* l-usage l-prop))
-        MBS-fit-cnt (min
-                      (floor (float (/ capacity MBS-usage)))
-                      (count s-tasks))
-
-        ; stage 2 - Pairs
-        cap-left (- capacity (* MBS-usage MBS-fit-cnt))
-        s-t-left (- (count s-tasks) MBS-fit-cnt)
-        l-t-left (- (count l-tasks) (* MBS-fit-cnt l-prop))
-
-        pair-usage (+ s-usage l-usage)
-        pair-fit-cnt (min
-                       (floor (float (/ cap-left pair-usage)))
-                       s-t-left)
-
-        cap-left (- cap-left (* pair-usage pair-fit-cnt))
-        s-t-left (- s-t-left pair-fit-cnt)
-        l-t-left (- l-t-left pair-fit-cnt)
+(defn cand-split [fit-l fit-s l-t-left s-t-left l-usage s-usage cap-left]
+  (let [cap-left (- cap-left (+ (* fit-s s-usage) (* fit-l l-usage)))
+        s-t-left (- s-t-left fit-s)
+        l-t-left (- l-t-left fit-l)
 
         ;stage 3 - Tasks
-        ;l-usage (if (< s-usage l-usage) s-usage l-usage)
         cap-left2 cap-left
 
         add-l1 (min
-                (floor (float (/ cap-left2 l-usage)))
-                l-t-left)
+                 (floor (float (/ cap-left2 l-usage)))
+                 l-t-left)
 
         cap-left2 (- cap-left2 (* l-usage add-l1))
 
         add-s1 (min
-                (floor (float (/ cap-left2 s-usage)))
-                s-t-left)
+                 (floor (float (/ cap-left2 s-usage)))
+                 s-t-left)
 
-        
         cap-left2 cap-left
 
         add-s2 (min
@@ -221,13 +190,136 @@
                  (floor (float (/ cap-left2 l-usage)))
                  l-t-left)
 
-        add-s (if (>=(+ add-s1 add-l1)(+ add-s2 add-l2)) add-s1 add-s2)
-        add-l (if (>=(+ add-s1 add-l1)(+ add-s2 add-l2)) add-l1 add-l2)
+        total-cnt1 (*
+                     (+ fit-l add-l1)
+                     (+ fit-s add-s1))
 
-        s-s1 (subvec s-tasks 0 (+ MBS-fit-cnt pair-fit-cnt add-s))
-        s-s2 (subvec s-tasks (+ MBS-fit-cnt pair-fit-cnt add-s))
-        l-s1 (subvec l-tasks 0 (+ add-l pair-fit-cnt (* MBS-fit-cnt l-prop)))
-        l-s2 (subvec l-tasks (+ add-l pair-fit-cnt (* MBS-fit-cnt l-prop)))
+        total-cnt2 (*
+                     (+ fit-l add-l2)
+                     (+ fit-s add-s2))
+
+        add-s (if (>= total-cnt1 total-cnt2) add-s1 add-s2)
+        add-l (if (>= total-cnt1 total-cnt2) add-l1 add-l2)
+        ]
+    [(+ fit-l add-l) (+ fit-s add-s)
+     (* (+ fit-l add-l) (+ fit-s add-s))]
+    ))
+
+(defn calc-splits! [allocator-data destination left-tasks right-tasks]
+  (let [task->usage (:task->usage allocator-data)
+        cluster->cap (:cluster->cap allocator-data)
+        capacity (.find cluster->cap destination)
+
+        left-usage (task->usage (first left-tasks))
+        right-usage (task->usage (first right-tasks))
+
+        ;fit-l-cnt (min
+        ;            (floor (float (/ capacity left-usage)))
+        ;            (count left-tasks))
+        ;fit-r-cnt (min
+        ;            (floor (float (/ capacity right-usage)))
+        ;            (count right-tasks))
+        
+        ;is-l-smaller (<= fit-l-cnt fit-r-cnt)
+        
+        is-l-smaller (<= (count left-tasks)(count right-tasks))
+        ;fit-sm-cnt (if is-l-smaller fit-l-cnt fit-r-cnt)
+        ;fit-lg-cnt (if is-l-smaller fit-r-cnt fit-l-cnt)
+
+        s-tasks (if is-l-smaller left-tasks right-tasks)
+        l-tasks (if is-l-smaller right-tasks left-tasks)
+
+        s-usage (task->usage (first s-tasks))
+        l-usage (task->usage (first l-tasks))
+        
+        ; stage 1 - MBS
+        ;l-prop (floor (float (/ fit-lg-cnt fit-sm-cnt)))
+        ;l-prop (floor (float (/ (count l-tasks) (count s-tasks))))
+
+        ;MBS-usage (+ s-usage (* l-usage l-prop))
+        ;MBS-fit-cnt (min
+        ;              (floor (float (/ capacity MBS-usage)))
+        ;              (count s-tasks))
+
+        l-prop 0
+        MBS-fit-cnt 0
+        MBS-usage 0
+
+        ; stage 2 - Pairs
+        cap-left capacity
+        s-t-left (count s-tasks)
+        l-t-left (count l-tasks)
+
+        ;cap-left (- capacity (* MBS-usage MBS-fit-cnt))
+        ;s-t-left (- (count s-tasks) MBS-fit-cnt)
+        ;l-t-left (- (count l-tasks) (* MBS-fit-cnt l-prop))
+
+        pair-usage (+ s-usage l-usage)
+        pair-fit-cnt (min
+                       (floor (float (/ cap-left pair-usage)))
+                       s-t-left)
+
+        ret (cand-split pair-fit-cnt pair-fit-cnt l-t-left s-t-left
+              l-usage s-usage cap-left)
+        
+        ret2 (if (>= l-usage s-usage)
+               (cand-split (dec pair-fit-cnt) pair-fit-cnt l-t-left s-t-left
+                 l-usage s-usage cap-left)
+               (cand-split pair-fit-cnt (dec pair-fit-cnt) l-t-left s-t-left
+                 l-usage s-usage cap-left))
+
+        total-l (if (>=(ret 2)(ret2 2)) (ret 0) (ret2 0))
+        total-s (if (>=(ret 2)(ret2 2)) (ret 1) (ret2 1))
+
+        ;cap-left (- cap-left (* pair-usage pair-fit-cnt))
+        ;s-t-left (- s-t-left pair-fit-cnt)
+        ;l-t-left (- l-t-left pair-fit-cnt)
+
+        ;stage 3 - Tasks
+        ;cap-left2 cap-left
+
+        ;add-l1 (min
+        ;       (floor (float (/ cap-left2 l-usage)))
+        ;        l-t-left)
+
+        ;cap-left2 (- cap-left2 (* l-usage add-l1))
+
+        ;add-s1 (min
+        ;        (floor (float (/ cap-left2 s-usage)))
+        ;        s-t-left)
+
+        ;cap-left2 cap-left
+
+        ;add-s2 (min
+        ;         (floor (float (/ cap-left2 s-usage)))
+        ;         s-t-left)
+
+        ;cap-left2 (- cap-left2 (* s-usage add-s2))
+
+        ;add-l2 (min
+        ;         (floor (float (/ cap-left2 l-usage)))
+        ;         l-t-left)
+
+        ;total-cnt1 (*
+        ;             (+ (* MBS-fit-cnt l-prop) pair-fit-cnt add-l1)
+        ;             (+ MBS-fit-cnt pair-fit-cnt add-s1))
+
+        ;total-cnt2 (*
+        ;             (+ (* MBS-fit-cnt l-prop) pair-fit-cnt add-l2)
+        ;             (+ MBS-fit-cnt pair-fit-cnt add-s2))
+
+        ;add-s (if (>= total-cnt1 total-cnt2) add-s1 add-s2)
+        ;add-l (if (>= total-cnt1 total-cnt2) add-l1 add-l2)
+
+        ;s-s1 (subvec s-tasks 0 (+ MBS-fit-cnt pair-fit-cnt add-s))
+        ;s-s2 (subvec s-tasks (+ MBS-fit-cnt pair-fit-cnt add-s))
+        ;l-s1 (subvec l-tasks 0 (+ add-l pair-fit-cnt (* MBS-fit-cnt l-prop)))
+        ;l-s2 (subvec l-tasks (+ add-l pair-fit-cnt (* MBS-fit-cnt l-prop)))
+
+        s-s1 (subvec s-tasks 0 total-s)
+        s-s2 (subvec s-tasks total-s)
+        l-s1 (subvec l-tasks 0 total-l)
+        l-s2 (subvec l-tasks total-l)
 
         s1-left (if is-l-smaller s-s1 l-s1)
         s2-left (if is-l-smaller s-s2 l-s2)
@@ -237,7 +329,7 @@
     (log-message "split: l-prop " l-prop)
     (log-message "split: MBS-usage " MBS-usage)
     (log-message "split: Cap " capacity " fit " MBS-fit-cnt)
-    (log-message "split: Capl " cap-left " s-l " s-t-left " s-l" l-t-left)
+    (log-message "split: Capl " cap-left " s-t " s-t-left " l-t " l-t-left)
     (log-message "split: " (pr-str s1-left) " " (pr-str s2-left) " " (pr-str s1-right) " " (pr-str s2-right))
     ;(log-message "split: Capl " cap-left2)
 
