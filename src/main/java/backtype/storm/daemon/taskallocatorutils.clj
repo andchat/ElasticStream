@@ -201,8 +201,8 @@
         add-s (if (>= total-cnt1 total-cnt2) add-s1 add-s2)
         add-l (if (>= total-cnt1 total-cnt2) add-l1 add-l2)
         ]
-    [(+ fit-l add-l) (+ fit-s add-s)
-     (* (+ fit-l add-l) (+ fit-s add-s))]
+    [(* (+ fit-l add-l) (+ fit-s add-s))
+     (+ fit-l add-l) (+ fit-s add-s)]
     ))
 
 (defn calc-splits! [allocator-data destination left-tasks right-tasks]
@@ -234,46 +234,65 @@
         
         ; stage 1 - MBS
         ;l-prop (floor (float (/ fit-lg-cnt fit-sm-cnt)))
-        ;l-prop (floor (float (/ (count l-tasks) (count s-tasks))))
+        l-prop (floor (float (/ (count l-tasks) (count s-tasks))))
 
-        ;MBS-usage (+ s-usage (* l-usage l-prop))
-        ;MBS-fit-cnt (min
-        ;              (floor (float (/ capacity MBS-usage)))
-        ;              (count s-tasks))
+        MBS-usage (+ s-usage (* l-usage l-prop))
+        MBS-fit-cnt (min
+                      (floor (float (/ capacity MBS-usage)))
+                      (count s-tasks))
 
-        l-prop 0
-        MBS-fit-cnt 0
-        MBS-usage 0
+        ;l-prop 0
+        ;MBS-fit-cnt 0
+        ;MBS-usage 0
 
         ; stage 2 - Pairs
-        cap-left capacity
-        s-t-left (count s-tasks)
-        l-t-left (count l-tasks)
+        ;cap-left capacity
+        ;s-t-left (count s-tasks)
+        ;l-t-left (count l-tasks)
 
-        ;cap-left (- capacity (* MBS-usage MBS-fit-cnt))
-        ;s-t-left (- (count s-tasks) MBS-fit-cnt)
-        ;l-t-left (- (count l-tasks) (* MBS-fit-cnt l-prop))
+        cap-left (- capacity (* MBS-usage MBS-fit-cnt))
+        s-t-left (- (count s-tasks) MBS-fit-cnt)
+        l-t-left (- (count l-tasks) (* MBS-fit-cnt l-prop))
 
         pair-usage (+ s-usage l-usage)
         pair-fit-cnt (min
                        (floor (float (/ cap-left pair-usage)))
                        s-t-left)
 
-        ret (cand-split pair-fit-cnt pair-fit-cnt l-t-left s-t-left
-              l-usage s-usage cap-left)
-        
-        ret2 (if (>= l-usage s-usage)
-               (cand-split (dec pair-fit-cnt) pair-fit-cnt l-t-left s-t-left
-                 l-usage s-usage cap-left)
-               (cand-split pair-fit-cnt (dec pair-fit-cnt) l-t-left s-t-left
-                 l-usage s-usage cap-left))
-
-        total-l (if (>=(ret 2)(ret2 2)) (ret 0) (ret2 0))
-        total-s (if (>=(ret 2)(ret2 2)) (ret 1) (ret2 1))
-
         ;cap-left (- cap-left (* pair-usage pair-fit-cnt))
         ;s-t-left (- s-t-left pair-fit-cnt)
         ;l-t-left (- l-t-left pair-fit-cnt)
+
+        s-fit (+ MBS-fit-cnt pair-fit-cnt)
+        l-fit (+ (* MBS-fit-cnt l-prop) pair-fit-cnt)
+
+        trial-1 (cand-split l-fit s-fit (count l-tasks)(count s-tasks)
+              l-usage s-usage capacity)
+
+        trial-2 (if (> l-fit 0)
+                  (cand-split (dec l-fit) s-fit (count l-tasks)(count s-tasks)
+                    l-usage s-usage capacity)
+                  [0 0 0])
+
+        trial-3 (if (> s-fit 0)
+                  (cand-split l-fit (dec s-fit) (count l-tasks)(count s-tasks)
+                    l-usage s-usage capacity)
+                  [0 0 0])
+
+        ;best (first (sort-by first > [trial-1 trial-2 trial-3]))
+        best (first (sort-by first > [trial-1]))
+        
+        ;ret2 (if (>= l-usage s-usage)
+        ;       (cand-split (dec pair-fit-cnt) pair-fit-cnt l-t-left s-t-left
+        ;         l-usage s-usage cap-left)
+        ;       (cand-split pair-fit-cnt (dec pair-fit-cnt) l-t-left s-t-left
+        ;         l-usage s-usage cap-left))
+
+        ;total-l (if (>=(ret 2)(ret2 2)) (ret 0) (ret2 0))
+        ;total-s (if (>=(ret 2)(ret2 2)) (ret 1) (ret2 1))
+
+        total-l (best 1)
+        total-s (best 2)
 
         ;stage 3 - Tasks
         ;cap-left2 cap-left

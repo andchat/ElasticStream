@@ -112,6 +112,19 @@
                          [0])]]
         (do
           (print "lc:" l-dec ",")
+          (when (not= (count task->usage)
+                  (count (apply concat (vals (first alloc-1)))))
+            (print "Error alloc 1 \n"))
+          (when (not= (count task->usage)
+                  (count (apply concat (vals (first alloc-4)))))
+            (print "Error alloc 4 \n"))
+          (when (not= (count task->usage)
+                  (count (apply concat (vals (first alloc-9)))))
+            (print "Error alloc 9 \n"))
+          (when (not= (count task->usage)
+                  (count (apply concat (vals (first alloc-8)))))
+            (print "Error alloc 8 \n"))
+
           (.write wrtr
             (str l-dec " "
               (evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
@@ -139,16 +152,14 @@
  
 (defnk test [load-con :multi? false]
   (let [
-available-nodes  10
-comp->task {1 [11 12 13 14 15], 2 [21 22 23 24 25 26 27 28 29 210 211 212],
-            3 [31 32 33 34 35 36 37 38],
-            4 [41]
-            }
-comp->usage {1 54.771, 3 24.6916, 4 0.052, 2 92.3002}
-comp->IPC {[2 3] 36689.99, [1 2] 20001.43, [3 4] 253.03513}
-
-
-
+available-nodes 10
+comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112], 2 [21 22 23 24 25 26 27 28 29 210 211 212], 3 [31 32 33 34 35 36 37 38 39 310 311 312],
+            4 [41 42 43 44 45 46 47 48 49 410 411 412], 5 [51 52 53 54 55 56 57 58 59 510 511 512],
+            6 [61 62 63 64 65 66 67 68 69 610 611 612], 7 [71 72 73 74 75 76 77 78 79 710 711 712],
+            8 [81 82 83 84 85 86 87 88 89 810 811 812], 9 [91 92 93 94 95 96 97 98 99 910 911 912]}
+comp->usage {1 10, 2 30, 3 70, 4 30, 5 70, 6 80, 7 20, 8 20, 9 10}
+comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
+           [1 8] 300, [2 8] 800, [8 9] 600, [4 9] 400}
 
 
 
