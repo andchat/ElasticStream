@@ -2,7 +2,7 @@
  (:use [backtype.storm bootstrap])
  (:use [clojure.contrib.def :only [defnk]])
  (:use [clojure.contrib.core :only [dissoc-in]])
- (:use [clojure.contrib.math :only [floor]])
+ (:use [clojure.contrib.math :only [floor ceil]])
  (:import [java.util PriorityQueue LinkedList Comparator])
  (:import [backtype.storm.utils Treap]))
 
@@ -753,23 +753,75 @@
       (merge-clusters! allocator-data (first l-cluster) (first r-cluster))
       ))
 
-;(defn handle-splits [allocator-data l r IPC]
-;  (let [splits (:splits allocator-data)
-;        comp->cluster (:comp->cluster allocator-data)
-;        s-l? (contains? @splits l) ; partly allocated vertices
-;        s-r? (contains? @splits r) ; partly allocated vertices
-;        l-alloc? (contains? @comp->cluster (str "@" l))
-;        r-alloc? (contains? @comp->cluster (str "@" r))
-;        l? (or s-l? ((complement contains?) @comp->cluster (str "@" l)))
-;        r? (or s-r? ((complement contains?) @comp->cluster (str "@" r)))
-;        l-s (if l? (str l ".2") l)
-;        r-s (if r? (str r ".2") r)]
-;    (cond
-;        (and s-l? s-r?) 0 ; means both are partly allocated! just resolve splits and continue
-;        (and (= c l-s) r?)(allocate-centroid allocator-data l-s r) ; nothing special here
-;        (and (= c r-s) l?)(allocate-centroid allocator-data r-s l) ; nothing special here
-;       (and (= c l-s) l?) 0; calc-initial the rest c, and then
-;        (and (= c r-s) r?) 0
-;        :else -1 ; if none is splitted we do nothing in here
-;      )
-;    ))
+(defn storm-alloc [nodes-number task->usage l-dec]
+  (let [
+        l-con (* 100 l-dec)
+        req (* 1.15 (reduce + (vals task->usage)))
+
+        new-nodes-number (min
+                           (ceil (/ req l-con)) 
+                           nodes-number)
+
+        nodes (range new-nodes-number)
+        tasks (sort (keys task->usage))
+        queue (LinkedList.)
+        ]
+    (print l-con " " req " " new-nodes-number "\n")
+    (doall (for [t nodes] (.offer queue [[t][]]))) ;fill stack
+    (doall (for [t tasks :let [bucket (.poll queue)
+                               l (first bucket)
+                               r (second bucket)]]
+             (.offer queue [l (conj r t)])))
+    (apply merge (for [[k v] queue] {(first k) v}))
+    ))
+
+(import [java.util PriorityQueue LinkedList Comparator])
+
+(defn storm-alloc2 [nodes-number task->usage task->component l-dec]
+  (let [component->task (apply merge-with into
+                          (map
+                            (fn [[task component]]
+                              {component [task]})
+                            task->component))
+        l-con (* 100 l-dec)
+        queue (LinkedList.)
+        continue? (atom true)
+        alloc (atom {})
+        
+        fits?-fn (fn [t n]
+                   (let [total (reduce + 
+                                 (map #(task->usage %)
+                                   (@alloc n)))]
+                     (<= (task->usage t)(- l-con total))))
+
+        assign-fn (fn [n]
+                    (let [tasks (.poll queue)
+                          t (first tasks)]
+                      (swap! alloc update-in [n] conj t)
+                      (when (> (count tasks) 1)
+                        (.offer queue (subvec tasks 1)))
+                      ))
+        ]
+
+    (doall (for [tasks (vals component->task)] (.offer queue tasks)))
+    (doall
+      (for [n (range nodes-number)]
+        (do
+          (reset! continue? true)
+          (while @continue?
+            (let [tasks (.peek queue)
+                  t (first tasks)]
+              (if-not (nil? tasks)
+                (if (fits?-fn t n)
+                    (assign-fn n)
+                    (reset! continue? false))
+                (reset! continue? false))
+              )))))
+    @alloc))
+
+;(def task->component {32 3, 33 3, 34 3, 35 3, 36 3, 37 3, 38 3, 41 4, 11 1, 12 1, 13 1, 14 1, 15 1, 210 2, 211 2, 212 2, 21 2, 22 2, 23 2, 24 2, 25 2, 26 2, 27 2, 28 2, 29 2, 31 3} )
+;(def task->usage {32 3.08645, 33 3.08645, 34 3.08645, 35 3.08645, 36 3.08645, 37 3.08645, 38 3.08645, 41 0.052, 11 10.9542, 12 10.9542, 13 10.9542, 14 10.9542, 15 10.9542, 210 7.6916833, 211 7.6916833, 212 7.6916833, 21 7.6916833, 22 7.6916833, 23 7.6916833, 24 7.6916833, 25 7.6916833, 26 7.6916833, 27 7.6916833, 28 7.6916833, 29 7.6916833, 31 3.08645})
+
+;(storm-alloc2 10 task->usage task->component 0.28)
+
+

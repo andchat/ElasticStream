@@ -32,7 +32,9 @@
                   :IPC-over-PC? true)
         alloc-5 (allocator-alg3 task->component
                   task->usage ltask+rtask->IPC load-con available-nodes
-                  )]
+                  )
+        storm (storm-alloc2 available-nodes task->usage task->component load-con)
+        ]
 
     (print "Allocation 1:" (pr-str (first alloc-1)) "\n")
     (print "Allocation 1:" (pr-str (second alloc-1)) "\n")
@@ -64,13 +66,18 @@
       (evaluate-alloc (first alloc-5) ltask+rtask->IPC) "\n")
     (print "Allocation 5:" (pr-str (count (apply concat (vals (first alloc-5))))) "\n\n")
 
+    (print "Storm:" (pr-str storm) "\n")
+    (print "Storm IPC gain:"
+      (evaluate-alloc storm ltask+rtask->IPC) "\n")
+
     (if (<= (count task->usage) 12)
         (print "best:" (max-IPC-gain task->usage ltask+rtask->IPC (int (* load-con 100))) "\n"))
     ))
 
 (defn test-alloc-multi [task->component task->usage ltask+rtask->IPC load-con end-con available-nodes]
   (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
-    (.write wrtr (str "load-constraint TD-2 Simple-2 Centroid Simple TD-imp Best \n"))
+    (.write wrtr (str "load-constraint TD-2 Simple-2 Centroid STORM Simple Best \n"))
+    ;(.write wrtr (str "load-constraint Simple-IPC/PC Simple-IPC \n"))
     (dorun
       (for [l (range (* load-con 100) (+ end-con 2) 2)
             :let [l-dec (double (/ l 100))]
@@ -109,7 +116,9 @@
             ;                )]
             :let [best (if (and (<= (count task->usage) 12) (<= available-nodes 3))
                          (max-IPC-gain task->usage ltask+rtask->IPC (int (* l-dec 100)))
-                         [0])]]
+                         [0])]
+
+            :let [storm (storm-alloc2 available-nodes task->usage task->component l-dec)]]
         (do
           (print "lc:" l-dec ",")
           (when (not= (count task->usage)
@@ -133,17 +142,18 @@
               (evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-5) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-7) ltask+rtask->IPC) " "
+              (evaluate-alloc storm ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
               (first best) " "
               ;(evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
-              (count (apply concat (vals (first alloc-1)))) " "
+              ;(count (apply concat (vals (first alloc-1)))) " "
               ;(count (apply concat (vals (first alloc-3)))) " "
-              (count (apply concat (vals (first alloc-4)))) " "
-              (count (apply concat (vals (first alloc-9)))) " "
+              ;(count (apply concat (vals (first alloc-4)))) " "
+              ;(count (apply concat (vals (first alloc-9)))) " "
               ;(count (apply concat (vals (first alloc-5)))) " "
               ;(count (apply concat (vals (first alloc-7)))) " "
-              (count (apply concat (vals (first alloc-8)))) " "
+              ;(count (apply concat (vals (first alloc-8)))) " "
               ;(count (apply concat (vals (first alloc-2)))) " "
               ;(count (apply concat (vals (first alloc-7)))) " "
               "\n")))
@@ -153,14 +163,12 @@
 (defnk test [load-con :multi? false]
   (let [
 available-nodes 10
-comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112], 2 [21 22 23 24 25 26 27 28 29 210 211 212], 3 [31 32 33 34 35 36 37 38 39 310 311 312],
-            4 [41 42 43 44 45 46 47 48 49 410 411 412], 5 [51 52 53 54 55 56 57 58 59 510 511 512],
-            6 [61 62 63 64 65 66 67 68 69 610 611 612], 7 [71 72 73 74 75 76 77 78 79 710 711 712],
-            8 [81 82 83 84 85 86 87 88 89 810 811 812], 9 [91 92 93 94 95 96 97 98 99 910 911 912]}
-comp->usage {1 10, 2 30, 3 70, 4 30, 5 70, 6 80, 7 20, 8 20, 9 10}
-comp->IPC {[1 3] 1700, [2 3] 1600, [4 6] 400, [5 6] 700, [3 7] 400, [6 7] 300,
-           [1 8] 300, [2 8] 800, [8 9] 600, [4 9] 400}
-
+comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112], 2 [21 22 23 24 25 26 27 28 29 210 211 212 213 214 215 216],
+            3 [31 32 33 34 35 36 37 38 39 310],
+            4 [41]
+            }
+comp->usage {1 54.771, 3 24.6916, 4 0.052, 2 92.3002}
+comp->IPC {[2 3] 36689.99, [1 2] 20001.43, [3 4] 253.03513}
 
 
 ;, [5 6] 24855.328
