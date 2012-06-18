@@ -76,7 +76,7 @@
 
 (defn test-alloc-multi [task->component task->usage ltask+rtask->IPC load-con end-con available-nodes]
   (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
-    (.write wrtr (str "load-constraint TD-2 Simple-2 Centroid STORM Simple Best \n"))
+    (.write wrtr (str "load-constraint TDA TD TL TDA TL Balanced IPC/PC IPC Storm Simple Best \n"))
     ;(.write wrtr (str "load-constraint Simple-IPC/PC Simple-IPC \n"))
     (dorun
       (for [l (range (* load-con 100) (+ end-con 2) 2)
@@ -135,16 +135,16 @@
             (print "Error alloc 8 \n"))
 
           (.write wrtr
-            (str l-dec " "
-              (evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
-              ;(evaluate-alloc (first alloc-3) ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
+            (str (int (* l-dec 100)) " "
+              ;(evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-5) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-7) ltask+rtask->IPC) " "
-              (evaluate-alloc storm ltask+rtask->IPC) " "
-              ;(evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
+              ;(evaluate-alloc storm ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
               (first best) " "
               ;(evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
               ;(count (apply concat (vals (first alloc-1)))) " "
@@ -163,12 +163,15 @@
 (defnk test [load-con :multi? false]
   (let [
 available-nodes 10
-comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112], 2 [21 22 23 24 25 26 27 28 29 210 211 212 213 214 215 216],
-            3 [31 32 33 34 35 36 37 38 39 310],
-            4 [41]
-            }
-comp->usage {1 54.771, 3 24.6916, 4 0.052, 2 92.3002}
-comp->IPC {[2 3] 36689.99, [1 2] 20001.43, [3 4] 253.03513}
+;comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150],
+;            2 [21 22 23 24 25 26 27 28 29 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250]}
+;comp->usage {1 40, 2 40}
+;comp->IPC {[1 2] 1000}
+
+comp->task {1 [11 12 13 14 15 16 17 18 19 110], 2 [201 202 203 204 205 206 207 208 209 210]
+            3 [301 302 303 304 305 306 307 308 309 310]}
+comp->usage {1 40, 2 40, 3 100}
+comp->IPC {[1 2] 1000, [2 3] 1749}
 
 
 ;, [5 6] 24855.328
@@ -212,6 +215,178 @@ comp->IPC {[2 3] 36689.99, [1 2] 20001.43, [3 4] 253.03513}
         ltask+rtask->IPC load-con (reduce + (vals comp->usage))
         available-nodes))
     ))
+
+(defn cnt-test [load-con]
+  (let [available-nodes 10
+        comp->usage {1 40, 2 80, 3 40}
+        comp->IPC {[1 2] 1000, [2 3] 500}]
+
+    (print "----------------------------------" "\n")
+    (print "available-nodes " available-nodes "\n")
+
+    (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
+      (dorun
+        (for [cnt (range 10 71)
+              :let[comp->task {1 (into [] (map #(+ 1000 %) (range 10))),
+                               2 (into [] (map #(+ 2000 %) (range cnt))),
+                               3 (into [] (map #(+ 3000 %) (range 10)))}
+
+                   task->component (apply merge
+                                     (for [ct comp->task t (second ct)]
+                                       {t (first ct)}))
+
+                   task->usage (apply merge
+                                 (for [ct comp->task t (second ct)
+                                       :let [cnt (count (second ct))]
+                                       :let [us (float (/ (comp->usage (first ct)) cnt))]]
+                                   {t us}))
+
+                   ltask+rtask->IPC (apply merge
+                                      (for [c (keys comp->IPC)
+                                            t1 (comp->task (first c))
+                                            t2 (comp->task (second c))
+                                            :let [cnt1 (count (comp->task (first c)))]
+                                            :let [cnt2 (count (comp->task (second c)))]
+                                            :let [c-us (comp->IPC c)]
+                                            :let [us (float (/ c-us (* cnt1 cnt2)))]]
+                                        {[t1 t2] us}))
+
+                   alloc-tds (allocator-alg1 task->component
+                               task->usage ltask+rtask->IPC load-con available-nodes
+                               :IPC-over-PC? true)
+
+                   alloc-tl (allocator-alg2 task->component
+                              task->usage ltask+rtask->IPC load-con available-nodes
+                              :IPC-over-PC? true)
+                   ]]
+          (do
+            (print cnt " ")
+            (.write wrtr
+              (str cnt " "
+                (evaluate-alloc (first alloc-tds) ltask+rtask->IPC) " "
+                (evaluate-alloc (first alloc-tl) ltask+rtask->IPC) " "
+                "\n")))
+          )))
+    ))
+
+
+(defn sort-test [load-con]
+  (let [available-nodes 10
+        comp->task {1 [11 12 13 14 15 16 17 18 19 110], 2 [201 202 203 204 205 206 207 208 209 210]
+                    3 [301 302 303 304 305 306 307 308 309 310]}
+        comp->usage {1 40, 2 40, 3 100}]
+    
+    (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
+      (dorun
+        (for [imc (range 1901 1001 -50)
+              :let [comp->IPC {[1 2] 1000, [2 3] imc}
+
+                    task->component (apply merge
+                                      (for [ct comp->task t (second ct)]
+                                        {t (first ct)}))
+
+                    task->usage (apply merge
+                                  (for [ct comp->task t (second ct)
+                                        :let [cnt (count (second ct))]
+                                        :let [us (float (/ (comp->usage (first ct)) cnt))]]
+                                    {t us}))
+
+                    ltask+rtask->IPC (apply merge
+                                       (for [c (keys comp->IPC)
+                                             t1 (comp->task (first c))
+                                             t2 (comp->task (second c))
+                                             :let [cnt1 (count (comp->task (first c)))]
+                                             :let [cnt2 (count (comp->task (second c)))]
+                                             :let [c-us (comp->IPC c)]
+                                             :let [us (float (/ c-us (* cnt1 cnt2)))]]
+                                         {[t1 t2] us}))
+
+                    alloc-tl-1 (allocator-alg2 task->component
+                               task->usage ltask+rtask->IPC load-con available-nodes
+                               :IPC-over-PC? true)
+
+                    alloc-tl-2 (allocator-alg2 task->component
+                               task->usage ltask+rtask->IPC load-con available-nodes)
+                    ]]
+          (.write wrtr
+            (str imc " "
+              (evaluate-alloc (first alloc-tl-1) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-tl-2) ltask+rtask->IPC) " "
+              "\n"))
+          )))
+    ))
+
+
+(defn heat-test [load-con]
+  (let [
+        available-nodes 10
+        comp->task {1 [11 12 13 14 15 16], 2 [21 22 23 24 25 26], 3 [31 32 33 34 35 36]}
+        comp->usage {1 30, 2 30, 3 30}
+        ;comp->IPC {[1 2] 3400, [2 3] 1600}
+
+        task->component (apply merge
+                          (for [ct comp->task t (second ct)]
+                            {t (first ct)}))
+
+        task->usage (apply merge
+                      (for [ct comp->task t (second ct)
+                            :let [cnt (count (second ct))]
+                            :let [us (float (/ (comp->usage (first ct)) cnt))]]
+                        {t us}))
+        ]
+    (print "----------------------------------" "\n")
+    (print "available-nodes " available-nodes "\n")
+
+    (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
+      ;(.write wrtr (str "IMC TDA TD TL \n"))
+      (dorun
+        (for [a (range 1000 5100 100) ;l (range start end 2)
+              :let [b (- 6000 a)
+                    load-con (* load-con 0.01)
+
+                    comp->IPC {[1 2] a, [2 3] b}
+                    ltask+rtask->IPC (apply merge
+                                       (for [c (keys comp->IPC)
+                                             t1 (comp->task (first c))
+                                             t2 (comp->task (second c))
+                                             :let [cnt1 (count (comp->task (first c)))]
+                                             :let [cnt2 (count (comp->task (second c)))]
+                                             :let [c-us (comp->IPC c)]
+                                             :let [us (float (/ c-us (* cnt1 cnt2)))]]
+                                         {[t1 t2] us}))
+                    alloc-tda (allocator-alg3 task->component
+                                task->usage ltask+rtask->IPC load-con available-nodes)
+
+                    alloc-tds (allocator-alg1 task->component
+                               task->usage ltask+rtask->IPC load-con available-nodes
+                               :IPC-over-PC? true)
+
+                    alloc-tl (allocator-alg2 task->component
+                               task->usage ltask+rtask->IPC load-con available-nodes
+                               :IPC-over-PC? true)
+                    ]]
+
+          (.write wrtr
+            (str a " "
+              (evaluate-alloc (first alloc-tda) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-tds) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-tl) ltask+rtask->IPC) " "
+              "\n"))
+          )))
+    ))
+
+
+
+
+
+
+
+
+
+
+
+
+
 ;BMC CA DTV LINTA MYL NWSA STX TXN VMED
 ;(def stocks
 ;  ["ATVI" "ADBE" "AKAM" "ALXN" "ALTR" "AMZN" "AMGN" "APOL" "AAPL" "AMAT" "ADSK" "ADP" "AVGO" "BIDU" "BBBY" "BIIB" "BMC" "BRCM" "CHRW" "CA" "CELG" "CERN" "CHKP" "CSCO" "CTXS"
