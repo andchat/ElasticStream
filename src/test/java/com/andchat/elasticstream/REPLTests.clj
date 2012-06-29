@@ -3,6 +3,11 @@
 (use '(backtype.storm.daemon taskallocatorutils))
 (use '[clojure.contrib.def :only [defnk]])
 (use 'clojure.java.io)
+(import 'java.util.Date)
+
+(defn mk-tasks [vertex cnt]
+  (into [] (map #(+ (* vertex 1000) %) (range cnt))))
+
 
 (defn max-IPC-gain [task->usage ltask+rtask->IPC loan-con]
   (let [comps (loop [f (combinations (keys task->usage) [0 1 2] {} 0)]
@@ -218,8 +223,8 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
 
 (defn cnt-test [load-con]
   (let [available-nodes 10
-        comp->usage {1 40, 2 80, 3 40}
-        comp->IPC {[1 2] 1000, [2 3] 500}]
+        comp->usage {1 200, 2 200}
+        comp->IPC {[1 2] 1000}]
 
     (print "----------------------------------" "\n")
     (print "available-nodes " available-nodes "\n")
@@ -228,8 +233,8 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
       (dorun
         (for [cnt (range 10 71)
               :let[comp->task {1 (into [] (map #(+ 1000 %) (range 10))),
-                               2 (into [] (map #(+ 2000 %) (range cnt))),
-                               3 (into [] (map #(+ 3000 %) (range 10)))}
+                               2 (into [] (map #(+ 2000 %) (range cnt)))
+                               }
 
                    task->component (apply merge
                                      (for [ct comp->task t (second ct)]
@@ -316,6 +321,88 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
           )))
     ))
 
+
+(defn throughput-test [load-con]
+  (let [available-nodes 10
+        comp->task {1 (mk-tasks 1 10),
+                    2 (mk-tasks 2 10),
+                    3 (mk-tasks 3 10),
+                    4 (mk-tasks 4 10),}
+        comp->usage {1 40, 2 40, 3 40, 4 40}
+        comp->IPC {[1 2] 1100, [2 3] 1000, [3 4] 900}
+
+        task->component (apply merge
+                          (for [ct comp->task t (second ct)]
+                            {t (first ct)}))
+
+        task->usage (apply merge
+                      (for [ct comp->task t (second ct)
+                            :let [cnt (count (second ct))]
+                            :let [us (float (/ (comp->usage (first ct)) cnt))]]
+                        {t us}))
+
+        ltask+rtask->IPC (apply merge
+                           (for [c (keys comp->IPC)
+                                 t1 (comp->task (first c))
+                                 t2 (comp->task (second c))
+                                 :let [cnt1 (count (comp->task (first c)))]
+                                 :let [cnt2 (count (comp->task (second c)))]
+                                 :let [c-us (comp->IPC c)]
+                                 :let [us (float (/ c-us (* cnt1 cnt2)))]]
+                             {[t1 t2] us}))
+
+        ;start-t (atom (.getTime (Date.)))
+        run-fn (fn[afn args sec]
+                 (dorun
+                   (for [i (range sec)]
+                     (apply afn args))))
+
+        run-alloc (fn[afn sec args]
+                    (let [start (atom (.getTime (Date.)))
+                          cnt (atom 0)]
+                      (while (< (float (/ (- (.getTime (Date.)) @start) 1000)) sec)
+                        (apply afn args)
+                        (swap! cnt inc))
+                      @cnt))
+        ]
+
+    ;(println @start)
+    ;(run-fn allocator-alg2
+    ;  [task->component task->usage ltask+rtask->IPC load-con
+    ;   available-nodes :IPC-over-PC? true] 40)
+    ;(println (float (/ (- (.getTime (Date.)) @start) 1000)))
+    ;(reset! start (.getTime (Date.)))
+    (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
+      (dorun
+        (for [s (range 1 20 1)]
+          (.write wrtr
+            (str s " "
+              (run-alloc allocator-alg2 s
+                [task->component task->usage ltask+rtask->IPC load-con
+                 available-nodes :IPC-over-PC? true]) " "
+              (run-alloc allocator-alg3 s
+                [task->component task->usage ltask+rtask->IPC load-con
+                 available-nodes]) " "
+              "\n"))
+          )))
+    
+    true
+
+    ;(dorun
+    ;  (for [i (range 40)]
+    ;    (allocator-alg1 task->component
+    ;      task->usage ltask+rtask->IPC load-con available-nodes
+    ;      :IPC-over-PC? true)))
+    ;(println (float (/ (- (.getTime (Date.)) @start) 1000)))
+    ;(reset! start (.getTime (Date.)))
+    ;(dorun
+    ;  (for [i (range 40)]
+    ;    (allocator-alg3 task->component
+    ;      task->usage ltask+rtask->IPC load-con available-nodes)))
+    ;(println (float (/ (- (.getTime (Date.)) @start) 1000)))
+    ;(reset! start (.getTime (Date.)))
+
+    ))
 
 (defn heat-test [load-con]
   (let [
