@@ -753,21 +753,21 @@
       (merge-clusters! allocator-data (first l-cluster) (first r-cluster))
       ))
 
-(defn storm-alloc [nodes-number task->usage l-dec]
+(defn storm-alloc [nodes-number task->usage]
   (let [
-        l-con (* 100 l-dec)
-        req (* 1.15 (reduce + (vals task->usage)))
+        ;l-con (* 100 l-dec)
+        ;req (* 1.15 (reduce + (vals task->usage)))
 
-        new-nodes-number (min
-                           (ceil (/ req l-con)) 
-                           nodes-number)
+        ;new-nodes-number (min
+        ;                   (ceil (/ req l-con))
+        ;                   nodes-number)
 
-        nodes (range new-nodes-number)
+        nodes (range nodes-number)
         tasks (sort (keys task->usage))
         queue (LinkedList.)
         ]
-    (print l-con " " req " " new-nodes-number "\n")
-    (doall (for [t nodes] (.offer queue [[t][]]))) ;fill stack
+    ;(print l-con " " req " " new-nodes-number "\n")
+    (doall (for [n nodes] (.offer queue [[n][]]))) ;fill stack
     (doall (for [t tasks :let [bucket (.poll queue)
                                l (first bucket)
                                r (second bucket)]]

@@ -5,9 +5,31 @@
 (use 'clojure.java.io)
 (import 'java.util.Date)
 
+(defn calc-task->component [comp->task]
+  (apply merge
+    (for [ct comp->task t (second ct)]
+      {t (first ct)})))
+
+(defn calc-task->usage [comp->task comp->usage]
+  (apply merge
+    (for [ct comp->task t (second ct)
+          :let [cnt (count (second ct))]
+          :let [us (float (/ (comp->usage (first ct)) cnt))]]
+      {t us})))
+
+(defn calc-task->ipc [comp->task comp->ipc]
+  (apply merge
+    (for [c (keys comp->ipc)
+          t1 (comp->task (first c))
+          t2 (comp->task (second c))
+          :let [cnt1 (count (comp->task (first c)))]
+          :let [cnt2 (count (comp->task (second c)))]
+          :let [c-us (comp->ipc c)]
+          :let [us (float (/ c-us (* cnt1 cnt2)))]]
+      {[t1 t2] us})))
+
 (defn mk-tasks [vertex cnt]
   (into [] (map #(+ (* vertex 1000) %) (range cnt))))
-
 
 (defn max-IPC-gain [task->usage ltask+rtask->IPC loan-con]
   (let [comps (loop [f (combinations (keys task->usage) [0 1 2] {} 0)]
@@ -81,7 +103,7 @@
 
 (defn test-alloc-multi [task->component task->usage ltask+rtask->IPC load-con end-con available-nodes]
   (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
-    (.write wrtr (str "load-constraint TDA TD TL TDA TL Balanced IPC/PC IPC Storm Simple Best \n"))
+    (.write wrtr (str "load-constraint TDA TL Balanced TDA TL Balanced IPC/PC IPC Storm Simple Best \n"))
     ;(.write wrtr (str "load-constraint Simple-IPC/PC Simple-IPC \n"))
     (dorun
       (for [l (range (* load-con 100) (+ end-con 2) 2)
@@ -141,15 +163,15 @@
 
           (.write wrtr
             (str (int (* l-dec 100)) " "
-              ;(evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-9) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-1) ltask+rtask->IPC) " "
-              ;(evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
+              (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-5) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-6) ltask+rtask->IPC) " "
               ;(evaluate-alloc (first alloc-7) ltask+rtask->IPC) " "
-              ;(evaluate-alloc storm ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
+              (evaluate-alloc storm ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-4) ltask+rtask->IPC) " "
+              ;(evaluate-alloc (first alloc-8) ltask+rtask->IPC) " "
               (first best) " "
               ;(evaluate-alloc (first alloc-2) ltask+rtask->IPC) " "
               ;(count (apply concat (vals (first alloc-1)))) " "
@@ -167,21 +189,25 @@
  
 (defnk test [load-con :multi? false]
   (let [
-available-nodes 10
-;comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150],
-;            2 [21 22 23 24 25 26 27 28 29 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250]}
-;comp->usage {1 40, 2 40}
-;comp->IPC {[1 2] 1000}
+available-nodes  10
+comp->task {1 [11 12 13 14 15 16 17 18 19 110 111 112], 2 [21 22 23 24 25 26 27 28 29 210 211 212 213 214 215 216],
+            3 [31 32 33 34 35 36 37 38 39 310],
+            4 [41]
+            }
+comp->usage {1 54.771, 3 24.6916, 4 0.052, 2 92.3002}
+comp->IPC {[2 3] 36689.99, [1 2] 20001.43, [3 4] 253.03513}
+        
+;comp->task {1 (mk-tasks 1 20), 3 (mk-tasks 3 10), 4 (mk-tasks 4 20), 5 (mk-tasks 5 5), 6 (mk-tasks 6 5)}
+;comp->usage {1 64, 3 38, 4 88, 5 6, 6 0.16}
+;comp->IPC {[1 3] 119707.984, [1 4] 86934, [3 4] 85083, [4 5] 41249, [5 6] 15165}
 
-comp->task {1 [11 12 13 14 15 16 17 18 19 110], 2 [201 202 203 204 205 206 207 208 209 210]
-            3 [301 302 303 304 305 306 307 308 309 310]}
-comp->usage {1 40, 2 40, 3 100}
-comp->IPC {[1 2] 1000, [2 3] 1749}
+;comp->task {1 (mk-tasks 1 20), 3 (mk-tasks 3 10), 4 (mk-tasks 4 20), 5 (mk-tasks 5 5)}
+;comp->usage {1 64, 3 38, 4 88, 5 6}
+;comp->IPC {[1 3] 119707.984, [1 4] 86934, [3 4] 85083, [4 5] 41249}
 
-
-;, [5 6] 24855.328
-        ; , 
-        ;, 6 1.814
+;comp->task {1 (mk-tasks 1 20), 2 (mk-tasks 2 10), 3 (mk-tasks 3 20), 4 (mk-tasks 4 20), 5 (mk-tasks 5 5)}
+;comp->usage {1 46, 2 15, 3 38, 4 88, 5 6}
+;comp->IPC {[1 3] 119707.984, [2 4] 86934, [3 4] 85083, [4 5] 41249}
 
         task->component (apply merge
                           (for [ct comp->task t (second ct)]
@@ -221,10 +247,11 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
         available-nodes))
     ))
 
+; (cnt-test 0.8)
 (defn cnt-test [load-con]
   (let [available-nodes 10
         comp->usage {1 200, 2 200}
-        comp->IPC {[1 2] 1000}]
+        comp->IPC {[1 2] 10}]
 
     (print "----------------------------------" "\n")
     (print "available-nodes " available-nodes "\n")
@@ -274,7 +301,7 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
           )))
     ))
 
-
+; run (sort-test 0.4)
 (defn sort-test [load-con]
   (let [available-nodes 10
         comp->task {1 [11 12 13 14 15 16 17 18 19 110], 2 [201 202 203 204 205 206 207 208 209 210]
@@ -314,14 +341,14 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
                                task->usage ltask+rtask->IPC load-con available-nodes)
                     ]]
           (.write wrtr
-            (str imc " "
-              (evaluate-alloc (first alloc-tl-1) ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-tl-2) ltask+rtask->IPC) " "
+            (str (* 0.001 imc) " "
+              (* 0.001 (evaluate-alloc (first alloc-tl-1) ltask+rtask->IPC)) " "
+              (* 0.001 (evaluate-alloc (first alloc-tl-2) ltask+rtask->IPC)) " "
               "\n"))
           )))
     ))
 
-
+; (throughput-test 0.2)
 (defn throughput-test [load-con]
   (let [available-nodes 10
         comp->task {1 (mk-tasks 1 10),
@@ -404,6 +431,7 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
 
     ))
 
+; run (heat-test 15) 
 (defn heat-test [load-con]
   (let [
         available-nodes 10
@@ -455,16 +483,91 @@ comp->IPC {[1 2] 1000, [2 3] 1749}
 
           (.write wrtr
             (str a " "
-              (evaluate-alloc (first alloc-tda) ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-tds) ltask+rtask->IPC) " "
-              (evaluate-alloc (first alloc-tl) ltask+rtask->IPC) " "
+              (* 0.001 (evaluate-alloc (first alloc-tda) ltask+rtask->IPC)) " "
+              (* 0.001 (evaluate-alloc (first alloc-tds) ltask+rtask->IPC)) " "
+              (* 0.001 (evaluate-alloc (first alloc-tl) ltask+rtask->IPC)) " "
               "\n"))
           )))
     ))
 
 
+; (rate-test 0.4)
+(defn rate-test [load-con]
+  (let ; 1 sec delay 50 tuples
+   [available-nodes 10
+    comp->task {1 (mk-tasks 1 30), 2 (mk-tasks 2 30),
+                3 (mk-tasks 3 30),
+                4 [41]}
 
+    task->component (calc-task->component comp->task)
 
+    ; 1 sec delay 50 tuples
+    u1 {1 62.771, 3 27.6916, 4 0.052, 2 92.3002}
+    ipc1 {[2 3] 35129.99, [1 2] 19071.43, [3 4] 158.03513}
+
+    ; 1 sec delay 10 tuples
+    u2 {1 44.359, 3 19.7383, 4 0.0581, 2 64.5151}
+    ipc2 {[2 3] 24184.99, [1 2] 13303.43, [3 4] 220.03513}
+
+    ; 1 sec delay 4 tuple
+    u3 {1 32.359, 3 14.7383, 4 0.053899996, 2 47.5151}
+    ipc3 {[2 3] 20955.99, [1 2] 11563.43, [3 4] 289.03513}
+    ;u3 {1 25.359, 3 11.7383, 4 0.053899996, 2 36.5151}
+    ;ipc3 {[2 3] 29346.99, [1 2] 16044.43, [3 4] 372.03513}
+
+    ; 1 sec delay 1 tuple
+    u4 {1 18.359, 3 8.9738, 4 0.0626, 2 26.5151}
+    ipc4 {[2 3] 20025.99, [1 2] 11205.43, [3 4] 448.03513}
+    ;u4 {1 18.359, 3 8.9738, 4 0.0626, 2 25.5151}
+    ;ipc4 {[2 3] 20594.99, [1 2] 11449.43, [3 4] 462.03513}
+
+    rates [9400 4200 2600 1500]
+
+    u [u2 u2 u1 u1 u1 u2 u2 u2 u3 u3 u3 u4 u4 u4 u4 u4 u4 u2 u2 u2]
+    ipc [ipc2 ipc2 ipc1 ipc1 ipc1 ipc2 ipc2 ipc2 ipc3 ipc3 ipc3 ipc4 ipc4 ipc4 ipc4 ipc4 ipc4 ipc2 ipc2 ipc2]
+    r [2 2 1 1 1 2 2 2 3 3 3 4 4 4 4 4 4 2 2 2]
+    ;u [u2 u2 u2 u1 u1 u1 u3 u3 u3 u3 u2 u2 u2 u4 u4 u4 u4 u3 u3]
+    ;ipc [ipc2 ipc2 ipc2 ipc1 ipc1 ipc1 ipc3 ipc3 ipc3 ipc3 ipc2 ipc2 ipc2 ipc4 ipc4 ipc4 ipc4 ipc3 ipc3]
+
+    ]
+
+    (with-open [wrtr (writer "/home/andchat/NetBeansProjects/lastrun")]
+      (.write wrtr (str "rate total_ipc TDA-load balanced-load gain sgain \n"))
+      (dorun
+        (for [i (range (count u))
+              :let [task->usage (calc-task->usage comp->task (u i))
+                    ltask+rtask->IPC (calc-task->ipc comp->task (ipc i))
+
+                    alloc-tda (allocator-alg3 task->component
+                                task->usage ltask+rtask->IPC load-con available-nodes)
+
+                    gain (evaluate-alloc (first alloc-tda) ltask+rtask->IPC)
+                    
+                    total (reduce + (vals (ipc i)))
+
+                    ;storm (storm-alloc2 available-nodes
+                    ;        (calc-task->usage comp->task (u 0))
+                    ;        task->component
+                    ;        load-con)
+
+                    storm (storm-alloc available-nodes
+                            (calc-task->usage comp->task (u 0)))
+
+                    sgain (evaluate-alloc storm ltask+rtask->IPC)
+                    ]]
+          (do
+            (print (first alloc-tda) "\n" storm "\n")
+            (.write wrtr
+              (str i " "
+                total " "
+                (- total gain) " "
+                (- total sgain) " "
+                (rates (dec (r i))) " "
+                ;gain " "
+                ;sgain " "
+                "\n")))
+          )))
+    ))
 
 
 

@@ -815,7 +815,7 @@
         prop (if (and total-ipc cur-ipc)
                (float (/ total-ipc cur-ipc))
                1000)
-        spread? (<= prop 0.2)
+        spread? (<= prop 0.5)
         ;spread? true
         ]
     (log-message "lcomp+rcomp->IPC:" @lcomp+rcomp->IPC)
